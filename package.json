@@ -1,0 +1,99 @@
+{
+  "name": "element-click-browser",
+  "displayName": "Element Click Browser",
+  "description": "A webview-based browser where clicking any element sends its info to the extension",
+  "version": "0.0.1",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:elementClickBrowser.open",
+    "onCommand:elementClickBrowser.stop",
+    "onCommand:elementClickBrowser.clearSession"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "elementClickBrowser.open",
+        "title": "Element Browser: Start Inspecting (Open App URL)"
+      },
+      {
+        "command": "elementClickBrowser.stop",
+        "title": "Element Browser: Stop Inspecting"
+      },
+      {
+        "command": "elementClickBrowser.clearSession",
+        "title": "Element Browser: Clear Saved Login Session"
+      },
+      {
+        "command": "elementClickBrowser.clearHistory",
+        "title": "Clear Clicked Elements History",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "elementClickBrowser.copyXPath",
+        "title": "Copy XPath of Selected Element"
+      },
+      {
+        "command": "elementClickBrowser.copySelector",
+        "title": "Copy CSS Selector of Selected Element"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "elementClickBrowserContainer",
+          "title": "Element Browser",
+          "icon": "$(browser)"
+        }
+      ]
+    },
+    "views": {
+      "elementClickBrowserContainer": [
+        {
+          "type": "webview",
+          "id": "elementClickBrowser.sidebarView",
+          "name": "Captured Elements"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "elementClickBrowser.clearHistory",
+          "when": "view == elementClickBrowser.sidebarView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "elementClickBrowser.copyXPath",
+          "when": "view == elementClickBrowser.elementsView"
+        },
+        {
+          "command": "elementClickBrowser.copySelector",
+          "when": "view == elementClickBrowser.elementsView"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "ws": "^8.21.3"
+  }
+}

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8">
+<style>
+  body{margin:0;padding:0;font-family:var(--vscode-font-family);font-size:13px;
+    color:var(--vscode-foreground);background:var(--vscode-sideBar-background);}
+  /* ---- Header ---- */
+  #header{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--vscode-panel-border);}
+  #header h2{margin:0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;flex:1;}
+  .icon-btn{background:none;border:none;color:var(--vscode-foreground);opacity:.7;cursor:pointer;
+    font-size:14px;padding:3px 6px;border-radius:4px;line-height:1;}
+  .icon-btn:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground);}
+  /* ---- Empty state ---- */
+  #empty{display:flex;flex-direction:column;align-items:center;padding:48px 24px;text-align:center;gap:10px;}
+  #empty .big{font-size:34px;opacity:.5;}
+  #empty p{margin:0;opacity:.65;font-size:12px;line-height:1.5;}
+  /* ---- Element cards ---- */
+  #cards{overflow-y:auto;}
+  .card{border-bottom:1px solid var(--vscode-panel-border);padding:9px 12px;cursor:pointer;}
+  .card:hover{background:var(--vscode-list-hoverBackground);}
+  .row{display:flex;align-items:center;gap:7px;}
+  .tag-badge{font-family:monospace;font-size:11px;font-weight:600;padding:1px 6px;border-radius:3px;
+    background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);}
+  .snippet{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.85;font-size:12px;}
+  .chev{opacity:.5;font-size:11px;transition:transform .15s;}
+  .card.open .chev{transform:rotate(90deg);}
+  .detail{display:none;margin-top:8px;border-left:2px solid var(--vscode-focusBorder);padding-left:10px;}
+  .card.open .detail{display:block;}
+  .kv{margin:3px 0;font-size:11px;}
+  .kv b{opacity:.6;font-weight:400;margin-right:5px;}
+  code{font-family:var(--vscode-editor-font-family,monospace);font-size:11px;
+    background:var(--vscode-textCodeBlock-background);padding:1px 4px;border-radius:3px;
+    word-break:break-all;display:inline-block;max-width:100%;}
+  .actions{display:flex;gap:6px;margin-top:7px;}
+  .mini{font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--vscode-button-border,transparent);
+    background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground);
+    cursor:pointer;}
+  .mini:hover{background:var(--vscode-button-secondaryHoverBackground);}
+  html{color-scheme:var(--vscode-color-scheme, dark);}
+</style></head>
+<body>
+<div id="header">
+  <h2>Element Browser</h2>
+  <span id="count" style="font-size:11px;opacity:.6;"></span>
+  <button class="icon-btn" id="clearBtn" title="Clear history">$(clear-all)🗑</button>
+</div>
+<div id="empty">
+  <div class="big">🎯</div>
+  <p><b>No elements captured yet.</b><br/>
+  Start inspecting your app, then click any element in the browser panel — its details will appear here.</p>
+  <button class="mini" id="startBtn">▶ Start Inspecting</button>
+</div>
+<div id="cards"></div>
+<script>
+  const vscode = acquireVsCodeApi();
+  let history = [];
+  const $ = id => document.getElementById(id);
+
+  function render(){
+    $('count').textContent = history.length ? history.length + ' captured' : '';
+    $('empty').style.display = history.length ? 'none' : 'flex';
+    const cards = $('cards'); cards.innerHTML = '';
+    [...history].reverse().forEach((d) => {
+      const card = document.createElement('div'); card.className = 'card';
+      const row = document.createElement('div'); row.className = 'row';
+      const tag = document.createElement('span'); tag.className = 'tag-badge'; tag.textContent = '<' + (d.tag||'?') + '>';
+      const snip = document.createElement('span'); snip.className = 'snippet';
+      snip.textContent = d.text ? '"' + d.text.slice(0,40) + '"' : (d.id ? '#'+d.id : d.cssSelector || '');
+      snip.title = snip.textContent;
+      const chev = document.createElement('span'); chev.className = 'chev'; chev.textContent = '▶';
+      row.appendChild(tag); row.appendChild(snip); row.appendChild(chev);
+      card.appendChild(row);
+
+      const det = document.createElement('div'); det.className = 'detail';
+      det.innerHTML =
+        '<div class="kv"><b>ID</b>' + (d.id ? '<code>'+esc(d.id)+'</code>' : '<i style="opacity:.5">—</i>') + '</div>' +
+        '<div class="kv"><b>CLASS</b>' + (d.className ? '<code>'+esc(d.className)+'</code>' : '<i style="opacity:.5">—</i>') + '</div>' +
+        '<div class="kv"><b>XPATH</b><code>'+esc(d.xpath||'')+'</code></div>' +
+        '<div class="kv"><b>CSS</b><code>'+esc(d.cssSelector||'')+'</code></div>';
+      const actions = document.createElement('div'); actions.className = 'actions';
+      actions.innerHTML = '<button class="mini" data-a="xpath">Copy XPath</button>' +
+        '<button class="mini" data-a="css">Copy CSS</button>' +
+        '<button class="mini" data-a="html">Copy HTML</button>' +
+        '<button class="mini" data-a="details">Details…</button>';
+      actions.querySelectorAll('.mini').forEach(btn => {
+        btn.onclick = function(ev){
+          ev.stopPropagation();
+          const a = btn.getAttribute('data-a');
+          if(a === 'xpath') vscode.postMessage({type:'copy', value:d.xpath||''});
+          else if(a === 'css') vscode.postMessage({type:'copy', value:d.cssSelector||''});
+          else if(a === 'html') vscode.postMessage({type:'copy', value:d.outerHTML||''});
+          else vscode.postMessage({type:'showDetails', data:d});
+        };
+      });
+      det.appendChild(actions);
+      card.appendChild(det);
+      card.onclick = () => card.classList.toggle('open');
+      cards.appendChild(card);
+    });
+  }
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  window.addEventListener('message', ev => {
+    const m = ev.data;
+    if(m && m.type === 'elements'){ history = m.history || []; render(); }
+  });
+  $('clearBtn').onclick = () => vscode.postMessage({type:'clearHistory'});
+  $('startBtn').onclick = () => vscode.postMessage({type:'start'});
+  vscode.postMessage({type:'sidebarReady'});
+</script>
+</body></html>
