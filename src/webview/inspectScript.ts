@@ -11,12 +11,172 @@ export const INJECT_SCRIPT = `
     try{
       var m = ev.data;
       if(m && m.__ecb === 'mode'){
+        var wasMode = mode;
         mode = !!m.enabled;
         document.documentElement.classList.toggle('__ecb-inspect', mode);
         if(!mode){ clearHover(); }
+        // Toggling the selector OFF cancels any active selection session
+        if(wasMode && !mode && selEl){ clearSelection(); }
+      }
+      // ---- Design editor channel (sidebar property panel) ----
+      if(m && m.__ecb === 'applyStyle'){ ecApplyStyle(m); }
+      if(m && m.__ecb === 'getStyles'){ sendStylesSnapshot(); }
+      if(m && m.__ecb === 'deselect'){ clearSelection(); }
+      if(m && m.__ecb === 'editActive'){
+        // Klone-style suppression (editor-iframe.ts selBoxHiddenUntil): EVERY
+        // panel edit pushes the deadline out 1.5s; the pin loop hides the box
+        // while the window is live and restores it automatically on expiry.
+        selBoxHiddenUntil = Date.now() + 1500;
+        updateSelBox();
       }
     }catch(e){}
   });
+  // ================= Design editor support =================
+  var ecbSeq = 0, lastSelected = null, lastEcbId = null, selEl = null, selBoxHiddenUntil = 0, selBoxEl = null;
+  // ---- Persistent selection highlight: top-level overlay box (klone model) ----
+  function ensureSelBox(){
+    if(selBoxEl) return;
+    var root = document.body || document.documentElement;
+    if(!root) return; // body not parsed yet — pin loop retries
+    selBoxEl = document.createElement('div');
+    selBoxEl.id = '__ecb-selbox';
+    selBoxEl.innerHTML = '<i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>';
+    root.appendChild(selBoxEl);
+  }
+  function updateSelBox(){
+    ensureSelBox();
+    if(!selBoxEl) return;
+    // Expired suppression window clears itself (no restore message needed).
+    if(selBoxHiddenUntil && Date.now() >= selBoxHiddenUntil){ selBoxHiddenUntil = 0; }
+    if(!selEl || !selEl.isConnected || selBoxHiddenUntil){
+      if(selBoxEl.style.display !== 'none') selBoxEl.style.display = 'none';
+      return;
+    }
+    var r = selEl.getBoundingClientRect();
+    if(r.width === 0 && r.height === 0){
+      if(selBoxEl.style.display !== 'none') selBoxEl.style.display = 'none';
+      return;
+    }
+    selBoxEl.style.display = 'block';
+    selBoxEl.style.left = (r.left - 3) + 'px';
+    selBoxEl.style.top = (r.top - 3) + 'px';
+    selBoxEl.style.width = (r.width + 6) + 'px';
+    selBoxEl.style.height = (r.height + 6) + 'px';
+  }
+  (function pinSelBox(){ updateSelBox(); requestAnimationFrame(pinSelBox); })();
+  function setSelected(el){
+    selEl = el;
+    lastSelected = el;
+    lastEcbId = ensureEcbId(el);
+    updateSelBox();
+  }
+  function clearSelection(){
+    selEl = null; lastSelected = null; lastEcbId = null;
+    updateSelBox();
+    try{ parent.postMessage({ __ecbDesignCleared: true }, '*'); }catch(e){}
+  }
+  function camelize(s){ return String(s).replace(/-([a-z])/g, function(_, c){ return c.toUpperCase(); }); }
+  var DESIGN_PROPS = ['width','height','min-width','min-height','max-width','opacity','visibility',
+    'mix-blend-mode','background-color','background-image','background-blend-mode','color',
+    'border-radius','border-top-left-radius','border-top-right-radius','border-bottom-left-radius','border-bottom-right-radius',
+    'border-top-width','border-right-width','border-bottom-width','border-left-width',
+    'border-top-color','border-right-color','border-bottom-color','border-left-color',
+    'border-top-style','border-right-style','border-bottom-style','border-left-style',
+    'box-shadow','font-family','font-weight','font-size','font-style','line-height','letter-spacing',
+    'direction','text-align','vertical-align','text-transform','text-decoration-line','text-overflow',
+    'white-space','overflow','transform'];
+  function collectDesignStyles(el){
+    try{
+      var cs = getComputedStyle(el), o = {};
+      for(var i = 0; i < DESIGN_PROPS.length; i++){
+        var p = DESIGN_PROPS[i], v = '';
+        try{ v = cs.getPropertyValue(p); }catch(e){}
+        if(v) o[camelize(p)] = v;
+      }
+      return o;
+    }catch(e){ return {}; }
+  }
+  function decomposeTransform(t){
+    var res = { tx: 0, ty: 0, rot: 0, sx: 1, sy: 1 };
+    if(!t || t === 'none') return res;
+    var tr = t.match(/translate\\((-?[\\d.]+)px,\\s*(-?[\\d.]+)px\\)/);
+    if(tr){ res.tx = parseFloat(tr[1]) || 0; res.ty = parseFloat(tr[2]) || 0; }
+    var m = t.match(/matrix(?:3d)?\\(([^)]+)\\)/);
+    if(m){
+      var parts = m[1].split(',').map(function(p){ return parseFloat(p); });
+      if(parts.length >= 6){
+        var a, b, c, d;
+        if(parts.length === 16){ res.tx = parts[12] || res.tx; res.ty = parts[13] || res.ty; a = parts[0]; b = parts[1]; c = parts[4]; d = parts[5]; }
+        else { res.tx = parts[4] || res.tx; res.ty = parts[5] || res.ty; a = parts[0]; b = parts[1]; c = parts[2]; d = parts[3]; }
+        res.rot = Math.round(Math.atan2(b, a) * 180 / Math.PI);
+        res.sx = Math.sqrt(a * a + b * b) || 1;
+        res.sy = Math.sqrt(c * c + d * d) || 1;
+        // A negative determinant means one axis is flipped (scale(-1, 1)).
+        if ((a * d - b * c) < 0) res.sy = -res.sy;
+      }
+    }
+    return res;
+  }
+  function findTargetEl(cmd){
+    if(cmd && cmd.ecbId){
+      try{ var el = document.querySelector('[data-ecb-id="' + cmd.ecbId + '"]'); if(el) return el; }catch(e){}
+    }
+    if(cmd && cmd.selector){ try{ var el2 = document.querySelector(cmd.selector); if(el2) return el2; }catch(e){} }
+    if(lastSelected && lastSelected.isConnected) return lastSelected;
+    return null;
+  }
+  function ensureEcbId(el){
+    var id = el.getAttribute('data-ecb-id');
+    if(!id){ id = 'ecb-' + (++ecbSeq) + '-' + Date.now().toString(36); el.setAttribute('data-ecb-id', id); }
+    return id;
+  }
+  function sendStylesSnapshot(){
+    var el = (lastSelected && lastSelected.isConnected) ? lastSelected : null;
+    if(!el && lastEcbId){ try{ el = document.querySelector('[data-ecb-id="' + lastEcbId + '"]'); }catch(e){} }
+    if(!el) return;
+    lastEcbId = ensureEcbId(el);
+    parent.postMessage({ __ecbStyles: true, data: { ecbId: lastEcbId, tag: el.tagName.toLowerCase(), selector: getCss(el), styles: collectDesignStyles(el) } }, '*');
+  }
+  function ecApplyStyle(cmd){
+    var el = findTargetEl(cmd);
+    if(!el || !cmd || !cmd.prop) return;
+    var prop = String(cmd.prop), value = cmd.value;
+    // Non-replaced INLINE elements ignore transforms entirely — promote them
+    // to inline-block when a geometry property needs room to move.
+    var isGeo = (prop === 'transform' || prop === 'rotate' || prop === 'scaleX' || prop === 'scaleY' ||
+                 prop === 'width' || prop === 'height' || prop === 'minWidth' || prop === 'minHeight' || prop === 'maxWidth');
+    if(isGeo){
+      try{
+        if(getComputedStyle(el).display === 'inline'){
+          el.style.setProperty('display', 'inline-block', 'important');
+        }
+      }catch(eI){}
+    }
+    if(prop === 'transform' || prop === 'rotate' || prop === 'scaleX' || prop === 'scaleY'){
+      var d = decomposeTransform(getComputedStyle(el).transform);
+      if(prop === 'transform'){
+        if(cmd.x !== undefined) d.tx = Number(cmd.x) || 0;
+        if(cmd.y !== undefined) d.ty = Number(cmd.y) || 0;
+      }
+      if(prop === 'rotate'){ d.rot = parseFloat(value) || 0; }
+      if(prop === 'scaleX'){ d.sx = parseFloat(value) || 1; }
+      if(prop === 'scaleY'){ d.sy = parseFloat(value) || 1; }
+      var t = 'translate(' + d.tx + 'px, ' + d.ty + 'px)';
+      if(d.rot) t += ' rotate(' + d.rot + 'deg)';
+      if(d.sx !== 1 || d.sy !== 1) t += ' scale(' + d.sx + ', ' + d.sy + ')';
+      el.style.setProperty('transform', t, 'important');
+    } else {
+      var cssProp = prop.replace(/[A-Z]/g, function(c){ return '-' + c.toLowerCase(); });
+      // '!important' so site stylesheets (utility classes etc.) can never
+      // silently swallow our edit.
+      el.style.setProperty(cssProp, value, 'important');
+    }
+    lastSelected = el;
+    lastEcbId = ensureEcbId(el);
+    setSelected(el);
+    sendStylesSnapshot();
+  }
+
   function getXPath(el){ if(el.id) return '//*[@id="'+el.id+'"]'; const parts=[]; while(el && el.nodeType===1 && el!==document.body){ let i=1,s=el.previousElementSibling; while(s){ if(s.tagName===el.tagName)i++; s=s.previousElementSibling;} parts.unshift(el.tagName.toLowerCase()+'['+i+']'); el=el.parentElement;} return '/body/'+parts.join('/'); }
   function getCss(el){ if(el.id) return '#'+CSS.escape(el.id); const parts=[]; let n=el; while(n && n!==document.documentElement && parts.length<6){ let s=n.tagName.toLowerCase(); if(n.classList && n.classList.length) s+='.'+[...n.classList].map(c=>CSS.escape(c)).join('.'); let i=1,sib=n.previousElementSibling; while(sib){ if(sib.tagName===n.tagName)i++; sib=sib.previousElementSibling;} if(i>1)s+=':nth-of-type('+i+')'; parts.unshift(s); n=n.parentElement;} return parts.reverse().join(' > '); }
   // ================= Rich element context collection =================
@@ -199,6 +359,13 @@ export const INJECT_SCRIPT = `
         cssVars: comp.vars,
         source: reactSource(el)
       };
+      // Design editor hooks: tag the element + attach a style snapshot
+      try{
+        data.ecbId = ensureEcbId(el);
+        lastSelected = el; lastEcbId = data.ecbId;
+        data.styles = collectDesignStyles(el);
+        setSelected(el); // persistent highlight until editing ends
+      }catch(eD){}
       parent.postMessage({ __ecb: true, data: data }, '*');
     }catch(e){}
   }
@@ -208,6 +375,12 @@ export const INJECT_SCRIPT = `
     const el = e.target;
     if(!el || el.nodeType !== 1) return;
     clearHover();
+    // Editing-session rules: clicking the selected element again or any
+    // background/body area ends the session instead of picking a new target.
+    if(selEl && el === selEl){ clearSelection(); return; }
+    if(el === document.body || el === document.documentElement){
+      if(selEl){ clearSelection(); } return;
+    }
     report(el); // capture CLEAN element state BEFORE any visual mutation
     document.querySelectorAll('.__ecb-hl').forEach(n=>{n.classList.remove('__ecb-hl');});
     el.classList.add('__ecb-hl');
@@ -259,6 +432,15 @@ export const INJECT_SCRIPT = `
   // Selection highlighter is white — stands out on any page.
   st.textContent = [
     '.__ecb-hl{outline:2px solid #FFFFFF !important;outline-offset:2px !important;}',
+    // Selection ring = dedicated top-level overlay (klone's selBoxEl model):
+    // position:fixed + rAF pin means NO ancestor overflow can ever clip it,
+    // so all four sides are always visible regardless of the element.
+    '#__ecb-selbox{position:fixed;display:none;z-index:2147483647;pointer-events:none;border:2px solid #FFFFFF;box-shadow:0 0 0 3px rgba(255,255,255,.28);}',
+    '#__ecb-selbox i{position:absolute;width:7px;height:7px;background:#FFFFFF;border:1px solid #1E1F1C;}',
+    '#__ecb-selbox i.tl{left:-4px;top:-4px;}',
+    '#__ecb-selbox i.tr{right:-4px;top:-4px;}',
+    '#__ecb-selbox i.bl{left:-4px;bottom:-4px;}',
+    '#__ecb-selbox i.br{right:-4px;bottom:-4px;}',
     '.__ecb-hover{',
     '  position:fixed;display:none;z-index:2147483647;',
     '  border:1.5px dashed rgba(255,255,255,.95);',

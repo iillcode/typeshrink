@@ -20,6 +20,51 @@ export function activate(context: vscode.ExtensionContext) {
 	let recordingSteps: BugStep[] | null = null; // non-null ⇒ a recording is in progress
 	let activePanel: vscode.WebviewPanel | undefined;
 	let lastTargetUrl = '';
+	// Last element clicked in the browser — the Design tab edits its styles.
+	let designTarget: ElementData | null = null;
+	// Data of the most recent finished editing session (kept so late commitEdits
+	// messages can still resolve their element after designTarget was cleared).
+	let styleSessionData: ElementData | null = null;
+
+	/** Commit accumulated Design-tab style edits as a Task under the
+	 *  "Style Edits" group (created on demand). Re-editing the same element
+	 *  updates its existing task instead of duplicating it. */
+	function commitStyleEdits(ecbId: string | null, edits: Array<{ prop: string; value: string }>) {
+		const base =
+			(ecbId && designTarget && designTarget.ecbId === ecbId) ? designTarget :
+			(ecbId && styleSessionData && styleSessionData.ecbId === ecbId) ? styleSessionData :
+			(styleSessionData || designTarget);
+		if (!base) return;
+		// collapse repeated props to their final value, keep first-appearance order
+		const order: string[] = [];
+		const byProp = new Map<string, string>();
+		for (const e of edits) {
+			if (!e || !e.prop) continue;
+			if (!order.includes(e.prop)) order.push(e.prop);
+			byProp.set(e.prop, String(e.value));
+		}
+		if (!order.length) return;
+
+		let proj = bugProjects.find((p) => p.name === 'Style Edits');
+		if (!proj) {
+			proj = { id: uid(), name: 'Style Edits', createdAt: Date.now(), paths: [] };
+			bugProjects.unshift(proj);
+			if (!activeProjectId) activeProjectId = proj.id;
+		}
+		let path = proj.paths.find((t) => t.steps[0] && t.steps[0].element.ecbId === base.ecbId);
+		if (!path) {
+			path = { id: uid(), title: '', kind: 'task', createdAt: Date.now(), steps: [] };
+			proj.paths.unshift(path);
+		}
+		path.steps = order.map((prop) => ({
+			element: { ...base, timestamp: Date.now() },
+			note: prop + ' \u2192 ' + byProp.get(prop)
+		}));
+		path.title = '<' + base.tag + '>' + (base.id ? ' #' + base.id : '') + ' \u00B7 ' + order.length + ' edit' + (order.length === 1 ? '' : 's');
+		saveBugFlows();
+		outputChannel.appendLine('[style-edits] committed "' + path.title + '" under "' + proj.name + '"');
+		notifyFlowState();
+	}
 
 	function uid(): string {
 		return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
@@ -307,6 +352,25 @@ export function activate(context: vscode.ExtensionContext) {
 		onClearHistory: clearAllHistory,
 		onShowDetails: showDetails,
 		onOpenBrowser: () => { void vscode.commands.executeCommand('elementClickBrowser.open'); },
+		getDesignTarget: () => designTarget,
+		onApplyStyle: (prop, value, x, y) => {
+			if (!activePanel || !designTarget) return;
+			activePanel.webview.postMessage({
+				type: 'ecbApplyStyle', prop, value, x, y,
+				ecbId: designTarget.ecbId ?? null,
+				selector: designTarget.cssSelector
+			});
+		},
+		onRefreshStyles: () => {
+			if (activePanel) activePanel.webview.postMessage({ type: 'ecbGetStyles' });
+		},
+		onDesignDeselect: () => {
+			if (activePanel) activePanel.webview.postMessage({ type: 'ecbDeselect' });
+		},
+		onDesignActivity: () => {
+			if (activePanel) activePanel.webview.postMessage({ type: 'ecbEditActive' });
+		},
+		onCommitStyleEdits: (ecbId, edits) => commitStyleEdits(ecbId, edits),
 		bug: {
 			view: () => bugView(),
 			newProject: () => { void promptNewProject(); },
@@ -371,9 +435,32 @@ export function activate(context: vscode.ExtensionContext) {
 							const d = msg.data as ElementData;
 							d.timestamp = Date.now();
 							try { d.contextText = buildContextText(d); } catch { /* keep raw */ }
-							history.push(d);
-							saveToFile();
-							showDetails(d); // logs silently — never steals focus
+							// switching to a different element ends the previous editing session
+							if (designTarget && designTarget.ecbId && designTarget.ecbId !== d.ecbId) {
+								styleSessionData = designTarget;
+							}
+							// Clicked elements are Design-tab edit targets only — they are
+							// NOT listed in captured-element history, tree view or disk.
+							designTarget = d;
+							showDetails(d); // silent output-channel log for debugging
+							sidebarProvider.postUpdate();
+							return;
+						}
+						if (msg.type === 'designCleared') {
+							// user clicked outside / same element / Esc — editing session over
+							styleSessionData = designTarget;
+							designTarget = null;
+							sidebarProvider.postUpdate();
+							return;
+						}
+						if (msg.type === 'designStyles') {
+							// Fresh computed snapshot from the page after an edit —
+							// merge into the design target and refresh the sidebar.
+							const s = msg.data as { ecbId?: string; tag?: string; selector?: string; styles?: Record<string, string> } | undefined;
+							if (s && designTarget) {
+								designTarget.ecbId = s.ecbId ?? designTarget.ecbId;
+								designTarget.styles = s.styles ?? designTarget.styles;
+							}
 							sidebarProvider.postUpdate();
 							return;
 						}

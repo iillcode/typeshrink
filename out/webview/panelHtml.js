@@ -85,16 +85,6 @@ function getWebviewHtml(proxyPort) {
   #chatBtn.on .icon-chevron{transform:rotate(180deg)}
   #chatBtn.pulse{animation:pulse 1.6s ease infinite}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(117,113,94,.55)}70%{box-shadow:0 0 0 8px rgba(117,113,94,0)}100%{box-shadow:0 0 0 0 rgba(117,113,94,0)}}
-  #badge{
-    position:absolute;top:1px;right:1px;
-    min-width:14px;height:14px;padding:0 3px;
-    border-radius:7px;
-    background:#75715E;color:#F8F8F2;
-    font-size:10px;font-weight:700;line-height:14px;text-align:center;
-    border:1.5px solid #272822;
-    display:none;pointer-events:none;
-  }
-  #chatBtn.on #badge{border-color:#414339}
   .badge-dot{
     position:absolute;right:1px;bottom:5px;
     width:9px;height:9px;border-radius:50%;
@@ -174,7 +164,6 @@ function getWebviewHtml(proxyPort) {
     <button class="tool-btn comment-group" id="chatBtn" title="Select element — click to turn ON inspect mode" aria-label="Inspect selection mode" aria-pressed="false">
       <svg class="icon-comment" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/></svg>
       <svg class="icon-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-      <span id="badge">0</span>
     </button>
     <button class="tool-btn" id="toolBtn" title="Downloads" aria-label="Downloads">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
@@ -213,7 +202,7 @@ function getWebviewHtml(proxyPort) {
   const $ = function(id){ return document.getElementById(id); };
   const app = $('app');
   const chatBtn = $('chatBtn');
-  const badge = $('badge');
+
   const flowBtn = $('flowBtn');
   const flowBadge = $('flowBadge');
   const noteBox = $('noteBox');
@@ -344,6 +333,32 @@ function getWebviewHtml(proxyPort) {
       return;
     }
     if(ev.data && ev.data.type === 'flowCount'){ flowBadgeSet(ev.data.count || 0); return; }
+    // ---- Design editor: host -> page commands ----
+    if(ev.data && ev.data.type === 'ecbApplyStyle'){
+      try{ app.contentWindow.postMessage({ __ecb:'applyStyle', prop: ev.data.prop, value: ev.data.value, x: ev.data.x, y: ev.data.y, ecbId: ev.data.ecbId, selector: ev.data.selector }, '*'); }catch(e){}
+      return;
+    }
+    if(ev.data && ev.data.type === 'ecbGetStyles'){
+      try{ app.contentWindow.postMessage({ __ecb:'getStyles' }, '*'); }catch(e){}
+      return;
+    }
+    if(ev.data && ev.data.type === 'ecbDeselect'){
+      try{ app.contentWindow.postMessage({ __ecb:'deselect' }, '*'); }catch(e){}
+      return;
+    }
+    if(ev.data && ev.data.type === 'ecbEditActive'){
+      try{ app.contentWindow.postMessage({ __ecb:'editActive' }, '*'); }catch(e){}
+      return;
+    }
+    // ---- Design editor: page -> host style snapshots / session end ----
+    if(ev.source === app.contentWindow && ev.data && ev.data.__ecbStyles){
+      vscode.postMessage({ type:'designStyles', data: ev.data.data });
+      return;
+    }
+    if(ev.source === app.contentWindow && ev.data && ev.data.__ecbDesignCleared){
+      vscode.postMessage({ type:'designCleared' });
+      return;
+    }
     if(ev.source === app.contentWindow && ev.data && ev.data.__ecbUrl){
       syncUrl(ev.data.url);
       return;
@@ -357,10 +372,6 @@ function getWebviewHtml(proxyPort) {
         showNote(d);
         return;
       }
-      clicks++;
-      badge.textContent = clicks > 99 ? '99+' : String(clicks);
-      badge.style.display = 'block';
-      badge.animate ? badge.animate([{transform:'scale(1)'},{transform:'scale(1.18)'},{transform:'scale(1)'}],{duration:220}) : 0;
       vscode.postMessage({ type:'elementClicked', data: d });
       return;
     }

@@ -100,6 +100,22 @@ class SidebarViewProvider {
             else if (msg.type === 'cancelRec') {
                 this.deps.bug.cancelRecording();
             }
+            else if (msg.type === 'designApply') {
+                this.deps.onApplyStyle(String(msg.prop), msg.value, typeof msg.x === 'number' ? msg.x : undefined, typeof msg.y === 'number' ? msg.y : undefined);
+            }
+            else if (msg.type === 'designRefresh') {
+                this.deps.onRefreshStyles();
+            }
+            else if (msg.type === 'designDeselect') {
+                this.deps.onDesignDeselect();
+            }
+            else if (msg.type === 'designEditing') {
+                this.deps.onDesignActivity();
+            }
+            else if (msg.type === 'commitEdits') {
+                const edits = Array.isArray(msg.edits) ? msg.edits : [];
+                this.deps.onCommitStyleEdits(msg.ecbId ? String(msg.ecbId) : null, edits);
+            }
             else if (msg.type === 'sidebarReady') {
                 this.postUpdate();
             }
@@ -110,6 +126,11 @@ class SidebarViewProvider {
         const history = this.deps.getHistory();
         this.view?.webview.postMessage({ type: 'elements', history, count: history.length });
         this.view?.webview.postMessage({ type: 'bug', data: this.deps.bug.view() });
+        const dt = this.deps.getDesignTarget();
+        this.view?.webview.postMessage({
+            type: 'designTarget',
+            data: dt ? { ecbId: dt.ecbId ?? null, tag: dt.tag, selector: dt.cssSelector, styles: dt.styles ?? {} } : null
+        });
     }
     reveal() {
         if (this.view) {

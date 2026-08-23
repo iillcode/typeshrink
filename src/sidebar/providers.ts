@@ -29,6 +29,18 @@ export interface SidebarDeps {
 	onClearHistory(): void;
 	onShowDetails(d: ElementData, focus?: boolean): void;
 	onOpenBrowser(): void;
+	/** Current Design-tab edit target (last element clicked in the browser). */
+	getDesignTarget(): ElementData | null;
+	/** Apply one style property to the design target inside the live page. */
+	onApplyStyle(prop: string, value: string, x?: number, y?: number): void;
+	/** Ask the page for a fresh computed-style snapshot. */
+	onRefreshStyles(): void;
+	/** User finished editing (Esc/Done) — clear the page selection highlight. */
+	onDesignDeselect(): void;
+	/** Editing activity changed (active=true while interacting; false 1.5s after last interaction). */
+	onDesignActivity(): void;
+	/** Commit accumulated style edits as a Task in the flows store. */
+	onCommitStyleEdits(ecbId: string | null, edits: Array<{ prop: string; value: string }>): void;
 	bug: BugFlowApi;
 }
 
@@ -75,6 +87,17 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 				this.deps.bug.stopRecording();
 			} else if (msg.type === 'cancelRec') {
 				this.deps.bug.cancelRecording();
+			} else if (msg.type === 'designApply') {
+				this.deps.onApplyStyle(String(msg.prop), msg.value, typeof msg.x === 'number' ? msg.x : undefined, typeof msg.y === 'number' ? msg.y : undefined);
+			} else if (msg.type === 'designRefresh') {
+				this.deps.onRefreshStyles();
+			} else if (msg.type === 'designDeselect') {
+				this.deps.onDesignDeselect();
+			} else if (msg.type === 'designEditing') {
+				this.deps.onDesignActivity();
+			} else if (msg.type === 'commitEdits') {
+				const edits = Array.isArray(msg.edits) ? msg.edits : [];
+				this.deps.onCommitStyleEdits(msg.ecbId ? String(msg.ecbId) : null, edits);
 			} else if (msg.type === 'sidebarReady') {
 				this.postUpdate();
 			}
@@ -86,6 +109,11 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 		const history = this.deps.getHistory();
 		this.view?.webview.postMessage({ type: 'elements', history, count: history.length });
 		this.view?.webview.postMessage({ type: 'bug', data: this.deps.bug.view() });
+		const dt = this.deps.getDesignTarget();
+		this.view?.webview.postMessage({
+			type: 'designTarget',
+			data: dt ? { ecbId: dt.ecbId ?? null, tag: dt.tag, selector: dt.cssSelector, styles: dt.styles ?? {} } : null
+		});
 	}
 
 	reveal() {
