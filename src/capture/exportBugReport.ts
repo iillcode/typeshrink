@@ -58,6 +58,7 @@ export function pathReport(p: BugPath): string {
  */
 function styleEditsReport(p: BugPath): string {
 	const el = p.steps[0]?.element;
+	const edits = (p.edits || []) as Array<{ prop: string; value: string }>;
 	if (!el) return composeTypedReport('Task Flow Report', p.title, p);
 	const target = firstHttpUrl(p.steps);
 	const L: string[] = [];

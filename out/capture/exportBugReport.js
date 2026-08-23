@@ -41,7 +41,7 @@ function composeBugReport(title, targetUrl, steps) {
 }
 /** Full markdown document for one stored path (bug or task). */
 function pathReport(p) {
-    if (p.source === 'design' && p.edits && edits.length)
+    if (p.source === 'design' && p.edits && p.edits.length)
         return styleEditsReport(p);
     const heading = p.kind === 'task' ? 'Task Flow Report' : 'Bug Flow Report';
     return composeTypedReport(heading, p.title, p);
@@ -54,6 +54,7 @@ function pathReport(p) {
  */
 function styleEditsReport(p) {
     const el = p.steps[0]?.element;
+    const edits = (p.edits || []);
     if (!el)
         return composeTypedReport('Task Flow Report', p.title, p);
     const target = firstHttpUrl(p.steps);
