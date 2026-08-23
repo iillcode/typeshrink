@@ -1,17 +1,212 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { ElementData } from './types';
+import { BugPath, BugProject, BugStep, BugView, ElementData } from './types';
 import { InjectingProxy } from './proxy/injectingProxy';
 import { SessionStore } from './session';
 import { getWebviewHtml } from './webview/panelHtml';
 import { buildContextText } from './capture/buildContextText';
+import { composeProjectReport, pathReport } from './capture/exportBugReport';
 import { SidebarViewProvider, ElementsTreeProvider, ElementItem } from './sidebar/providers';
 
 export function activate(context: vscode.ExtensionContext) {
 	const outputChannel = vscode.window.createOutputChannel('Element Click Browser');
 	let history: ElementData[] = [];
 	const sessions = new SessionStore(context.globalStorageUri.fsPath, (m) => outputChannel.appendLine(m));
+
+	// ---- Debug-flow projects & paths (shared between panel and sidebar) ----
+	let bugProjects: BugProject[] = loadBugFlows();
+	let activeProjectId: string | null = null;
+	let recordingSteps: BugStep[] | null = null; // non-null ⇒ a recording is in progress
+	let activePanel: vscode.WebviewPanel | undefined;
+	let lastTargetUrl = '';
+
+	function uid(): string {
+		return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+	}
+
+	function activeProject(): BugProject | null {
+		return bugProjects.find((p) => p.id === activeProjectId) ?? null;
+	}
+
+	function notifyFlowState() {
+		activePanel?.webview.postMessage({
+			type: 'flowState',
+			active: !!recordingSteps,
+			count: recordingSteps ? recordingSteps.length : 0
+		});
+		sidebarProvider.postUpdate();
+	}
+
+	// ---- Persistence (workspace-root bug-flows.json) ----
+	function bugFile(): string | null {
+		const ws = vscode.workspace.workspaceFolders?.[0];
+		return ws ? path.join(ws.uri.fsPath, 'bug-flows.json') : null;
+	}
+
+	function loadBugFlows(): BugProject[] {
+		const file = bugFile();
+		if (!file || !fs.existsSync(file)) return [];
+		try {
+			const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+			if (!Array.isArray(raw)) return [];
+			return raw.map((p: any) => ({
+				id: String(p?.id || uid()),
+				name: String(p?.name || 'Untitled project'),
+				createdAt: Number(p?.createdAt) || Date.now(),
+				paths: Array.isArray(p?.paths) ? p.paths.map((t: any) => ({
+					id: String(t?.id || uid()),
+					title: String(t?.title || 'Untitled'),
+					kind: t?.kind === 'task' ? 'task' as const : 'bug' as const,
+					createdAt: Number(t?.createdAt) || Date.now(),
+					steps: Array.isArray(t?.steps) ? t.steps : []
+				})) : []
+			}));
+		} catch (e: any) {
+			outputChannel.appendLine('[bug-flow] failed to read bug-flows.json: ' + e.message);
+			return [];
+		}
+	}
+
+	function saveBugFlows() {
+		const file = bugFile();
+		if (!file) return;
+		try {
+			fs.writeFileSync(file, JSON.stringify(bugProjects, null, 2));
+		} catch (e: any) {
+			outputChannel.appendLine('[bug-flow] failed to write bug-flows.json: ' + e.message);
+		}
+	}
+
+	/** Lightweight snapshot for the sidebar webview (full data stays host-side). */
+	function bugView(): BugView {
+		return {
+			projects: bugProjects.map((p) => ({
+				id: p.id,
+				name: p.name,
+				createdAt: p.createdAt,
+				paths: p.paths.map((t) => ({
+					id: t.id,
+					title: t.title,
+					kind: t.kind,
+					createdAt: t.createdAt,
+					steps: t.steps.map((s) => ({ tag: s.element.tag, id: s.element.id, note: s.note }))
+				}))
+			})),
+			activeProjectId,
+			recordingActive: !!recordingSteps,
+			recordingSteps: recordingSteps ? recordingSteps.length : 0,
+			recordingProjectName: activeProject()?.name ?? null
+		};
+	}
+
+	function findPath(projectId: string, pathId: string): { proj: BugProject; pt: BugPath } | null {
+		const proj = bugProjects.find((p) => p.id === projectId);
+		const pt = proj?.paths.find((t) => t.id === pathId);
+		return proj && pt ? { proj, pt } : null;
+	}
+
+	async function promptNewProject(): Promise<BugProject | null> {
+		const name = ((await vscode.window.showInputBox({
+			prompt: 'Name this debug project — it groups your recorded paths',
+			placeHolder: 'e.g. Checkout page v2',
+			ignoreFocusOut: true
+		})) || '').trim();
+		if (!name) return null;
+		const proj: BugProject = { id: uid(), name, createdAt: Date.now(), paths: [] };
+		bugProjects.unshift(proj);
+		activeProjectId = proj.id;
+		saveBugFlows();
+		outputChannel.appendLine('[bug-flow] project created: "' + name + '"');
+		notifyFlowState();
+		return proj;
+	}
+
+	/** Begin a recording session inside the active project (creating one on demand). */
+	async function startRecording(): Promise<boolean> {
+		if (!activeProject()) {
+			const created = await promptNewProject();
+			if (!created) return false; // user cancelled naming — don't record into nowhere
+		}
+		recordingSteps = [];
+		outputChannel.appendLine('[bug-flow] recording started → "' + activeProject()!.name + '"');
+		notifyFlowState();
+		return true;
+	}
+
+	/** Stop the current recording and store its steps as a new path. */
+	async function finishAndSavePath() {
+		const steps = recordingSteps ?? [];
+		recordingSteps = null;
+		if (!steps.length) {
+			outputChannel.appendLine('[bug-flow] stopped — no steps recorded');
+			notifyFlowState();
+			return;
+		}
+		const count = steps.length;
+		const title = ((await vscode.window.showInputBox({
+			prompt: 'Describe what happened — becomes the path title (' + count + ' step' + (count === 1 ? '' : 's') + ')',
+			placeHolder: 'e.g. Color editor does not apply changes',
+			ignoreFocusOut: true
+		})) || '').trim();
+
+		const kindPick = await vscode.window.showQuickPick(['🐞 Bug', '📌 Task'], {
+			placeHolder: 'What kind of flow is this?',
+			ignoreFocusOut: true
+		});
+		const kind: 'bug' | 'task' = kindPick === '📌 Task' ? 'task' : 'bug';
+
+		let proj = activeProject();
+		if (!proj) {
+			proj = { id: uid(), name: 'My project', createdAt: Date.now(), paths: [] };
+			bugProjects.unshift(proj);
+			activeProjectId = proj.id;
+		}
+		const finalTitle = title || (kind === 'task' ? 'Task ' : 'Bug ') + (proj.paths.length + 1);
+
+		proj.paths.unshift({ id: uid(), title: finalTitle, kind, createdAt: Date.now(), steps });
+		saveBugFlows();
+		outputChannel.appendLine('[bug-flow] saved "' + finalTitle + '" (' + count + ' steps, ' + kind + ') → "' + proj.name + '"');
+		notifyFlowState();
+		vscode.window.showInformationMessage('Saved "' + finalTitle + '" (' + count + ' steps) to "' + proj.name + '". Use the sidebar to copy or export it.');
+	}
+
+	// ---- Sidebar-driven management actions ----
+	function selectProject(id: string) {
+		if (!bugProjects.some((p) => p.id === id)) return;
+		activeProjectId = id;
+		notifyFlowState();
+	}
+
+	async function renameProject(id: string) {
+		const proj = bugProjects.find((p) => p.id === id);
+		if (!proj) return;
+		const name = ((await vscode.window.showInputBox({
+			prompt: 'Rename project',
+			value: proj.name,
+			ignoreFocusOut: true
+		})) || '').trim();
+		if (!name || name === proj.name) return;
+		proj.name = name;
+		saveBugFlows();
+		outputChannel.appendLine('[bug-flow] project renamed → "' + name + '"');
+		notifyFlowState();
+	}
+
+	async function deleteProject(id: string) {
+		const proj = bugProjects.find((p) => p.id === id);
+		if (!proj) return;
+		const pick = await vscode.window.showWarningMessage(
+			'Delete project "' + proj.name + '" and its ' + proj.paths.length + ' path' + (proj.paths.length === 1 ? '' : 's') + '?',
+			{ modal: true }, 'Delete'
+		);
+		if (pick !== 'Delete') return;
+		bugProjects = bugProjects.filter((p) => p.id !== id);
+		if (activeProjectId === id) activeProjectId = bugProjects[0]?.id ?? null;
+		saveBugFlows();
+		outputChannel.appendLine('[bug-flow] project deleted: "' + proj.name + '"');
+		notifyFlowState();
+	}
 
 	// ---- Helpers ----
 	function saveToFile() {
@@ -36,6 +231,66 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.showInformationMessage('Copied: ' + value);
 	}
 
+	async function deletePath(projectId: string, pathId: string) {
+		const found = findPath(projectId, pathId);
+		if (!found) return;
+		const pick = await vscode.window.showWarningMessage(
+			'Delete "' + found.pt.title + '" (' + found.pt.steps.length + ' steps)?',
+			{ modal: true }, 'Delete'
+		);
+		if (pick !== 'Delete') return;
+		found.proj.paths = found.proj.paths.filter((t) => t.id !== pathId);
+		saveBugFlows();
+		outputChannel.appendLine('[bug-flow] path deleted: "' + found.pt.title + '"');
+		notifyFlowState();
+	}
+
+	function copyPath(projectId: string, pathId: string) {
+		const found = findPath(projectId, pathId);
+		if (!found) return;
+		void vscode.env.clipboard.writeText(pathReport(found.pt));
+		vscode.window.showInformationMessage('Copied "' + found.pt.title + '" (' + found.pt.steps.length + ' steps) to clipboard.');
+	}
+
+	function copyProject(projectId: string) {
+		const proj = bugProjects.find((p) => p.id === projectId);
+		if (!proj) return;
+		void vscode.env.clipboard.writeText(composeProjectReport(proj));
+		vscode.window.showInformationMessage('Copied all ' + proj.paths.length + ' path' + (proj.paths.length === 1 ? '' : 's') + ' of "' + proj.name + '" to clipboard.');
+	}
+
+	async function exportPath(projectId: string, pathId: string) {
+		const found = findPath(projectId, pathId);
+		if (!found) return;
+		const report = pathReport(found.pt);
+		const ws = vscode.workspace.workspaceFolders?.[0];
+		if (!ws) {
+			await vscode.env.clipboard.writeText(report);
+			vscode.window.showWarningMessage('No workspace folder open — copied to clipboard instead.');
+			return;
+		}
+		const slug = found.pt.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'flow';
+		const file = path.join(ws.uri.fsPath, slug + '-report.md');
+		fs.writeFileSync(file, report);
+		try {
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+			await vscode.window.showTextDocument(doc, { preview: true });
+		} catch { /* opening is best-effort */ }
+		vscode.window.showInformationMessage('Report saved to ' + file);
+	}
+
+	function stopRecording() {
+		if (recordingSteps) void finishAndSavePath();
+	}
+
+	function cancelRecording() {
+		if (!recordingSteps) return;
+		const n = recordingSteps.length;
+		recordingSteps = null;
+		outputChannel.appendLine('[bug-flow] recording cancelled — ' + n + ' step(s) discarded');
+		notifyFlowState();
+	}
+
 	function clearAllHistory() {
 		history = [];
 		treeProvider.refresh();
@@ -52,6 +307,19 @@ export function activate(context: vscode.ExtensionContext) {
 		onClearHistory: clearAllHistory,
 		onShowDetails: showDetails,
 		onOpenBrowser: () => { void vscode.commands.executeCommand('elementClickBrowser.open'); },
+		bug: {
+			view: () => bugView(),
+			newProject: () => { void promptNewProject(); },
+			selectProject,
+			renameProject,
+			deleteProject,
+			deletePath,
+			copyPath,
+			copyProject,
+			exportPath,
+			stopRecording,
+			cancelRecording
+		}
 	});
 
 	context.subscriptions.push(
@@ -88,11 +356,15 @@ export function activate(context: vscode.ExtensionContext) {
 					'elementClickBrowser',
 					'Element Browser — ' + urlInput,
 					vscode.ViewColumn.One,
-					{ enableScripts: true }
+					// retainContextWhenHidden: without it VS Code tears down the
+					// page iframe when the tab is hidden (e.g. switching to a
+					// second browser tab), wiping the URL bar and app state.
+					{ enableScripts: true, retainContextWhenHidden: true }
 				);
 				panel.webview.html = getWebviewHtml(proxyPort);
+				activePanel = panel;
+				lastTargetUrl = urlInput;
 
-				let ready = false;
 				panel.webview.onDidReceiveMessage(
 					async (msg) => {
 						if (msg.type === 'elementClicked') {
@@ -102,6 +374,24 @@ export function activate(context: vscode.ExtensionContext) {
 							history.push(d);
 							saveToFile();
 							showDetails(d); // logs silently — never steals focus
+							sidebarProvider.postUpdate();
+							return;
+						}
+						if (msg.type === 'toggleFlow') {
+							if (!recordingSteps) void startRecording();
+							else void finishAndSavePath();
+							return;
+						}
+						if (msg.type === 'stepSaved') {
+							const d = msg.data as ElementData | undefined;
+							if (!d || typeof d !== 'object' || !recordingSteps) return;
+							d.timestamp = Date.now();
+							try { d.contextText = buildContextText(d); } catch { /* keep raw */ }
+							recordingSteps.push({ element: d, note: String(msg.note || '') });
+							outputChannel.appendLine('[bug-flow] Step ' + recordingSteps.length + ': <' + d.tag + '>' + (d.id ? ' #' + d.id : '')
+								+ (d.className ? ' .' + d.className.split(/\s+/).slice(0, 2).join('.') : '')
+								+ (msg.note ? ' — "' + msg.note + '"' : ''));
+							activePanel?.webview.postMessage({ type: 'flowCount', count: recordingSteps.length });
 							sidebarProvider.postUpdate();
 							return;
 						}
@@ -143,15 +433,25 @@ export function activate(context: vscode.ExtensionContext) {
 							const u = msg.url || 'No page loaded yet.';
 							vscode.window.showInformationMessage('Page: ' + u + ' | ' + history.length + ' element(s) captured', 'Clear history')
 								.then(pick => { if (pick === 'Clear history') clearAllHistory(); });
-						} else if (msg.type === 'ready' && !ready) {
-							ready = true;
+						} else if (msg.type === 'ready') {
+							// The webview posts this on every (re)creation — e.g.
+							// after its content was torn down while hidden — so
+							// ALWAYS answer with the launch URL + flow state.
 							panel.webview.postMessage({ type: 'load', url: urlInput, target: urlInput });
+							panel.webview.postMessage({
+								type: 'flowState',
+								active: !!recordingSteps,
+								count: recordingSteps ? recordingSteps.length : 0
+							});
 						}
 					},
 					undefined,
 					context.subscriptions
 				);
-				panel.onDidDispose(() => proxy.dispose(), undefined, context.subscriptions);
+				panel.onDidDispose(() => {
+					proxy.dispose();
+					if (activePanel === panel) activePanel = undefined;
+				}, undefined, context.subscriptions);
 
 				panel.webview.postMessage({ type: 'load', url: urlInput });
 				sidebarProvider.reveal();

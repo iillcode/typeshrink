@@ -1,11 +1,6 @@
 <!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
-<!-- Open-source icons: Lucide (MIT) via CDN — https://lucide.dev — also inlined as SVG below for offline/CSP -->
-<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 <style>
   /* ---- Extension palette (see DESIGN.md) ---- */
   :root{
@@ -22,13 +17,9 @@
     --vscode-focusBorder:#75715E;
     --vscode-textCodeBlock-background:#272822;
   }
-  body{margin:0;padding:0;font-family:'Nunito', 'Varela Round', system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif;font-size:13px;
+  body{margin:0;padding:0;font-family:var(--vscode-font-family);font-size:13px;
     color:var(--vscode-foreground);background:var(--vscode-sideBar-background);
     display:flex;flex-direction:column;min-height:100vh;height:100vh;}
-  button,input,select,textarea{font-family:'Nunito', system-ui, sans-serif;}
-  .icon-svg{width:14px;height:14px;flex:0 0 14px;display:block;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
-  .icon-svg.sm{width:12px;height:12px;flex:0 0 12px;}
-  .icon-svg.lg{width:16px;height:16px;flex:0 0 16px;}
   /* ---- Header ---- */
   #header{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--vscode-panel-border);}
   #header h2{margin:0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;flex:1;}
@@ -66,8 +57,8 @@
   .proj.open .proj-chev,.path.open .path-chev{transform:rotate(90deg);}
   .row-actions{display:flex;gap:1px;visibility:hidden;flex:0 0 auto;}
   .proj-head:hover .row-actions,.path-head:hover .row-actions{visibility:visible;}
-  .act{background:none;border:none;color:var(--vscode-foreground);opacity:.6;cursor:pointer;
-    width:24px;height:24px;display:flex;align-items:center;justify-content:center;padding:0;border-radius:0;line-height:1;}
+  .act{background:none;border:none;color:var(--vscode-foreground);opacity:.55;cursor:pointer;
+    font-size:11px;padding:2px 4px;border-radius:0;line-height:1;}
   .act:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground);}
   /* Paths */
   .paths{border-top:1px solid var(--vscode-panel-border);}
@@ -86,56 +77,6 @@
   .viz{background:var(--vscode-textCodeBlock-background);border-top:1px dashed var(--vscode-panel-border);max-height:340px;overflow-x:hidden;overflow-y:auto;padding:8px 6px;}
   .viz svg{display:block;margin:0 auto;height:auto;width:100% !important;max-width:100%;}
   .viz-empty{font-size:11px;opacity:.5;padding:4px;text-align:center;}
-  /* ---- Chat task list (new pattern for #projList) ---- */
-  #projList.chat-list{display:flex;flex-direction:column;overflow-y:auto;max-height:52vh;min-height:0;}
-  .chat-group-head{font-size:10px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;opacity:.45;padding:10px 10px 4px;display:flex;justify-content:space-between;align-items:center;}
-  .chat-item{display:flex;align-items:center;gap:10px;padding:9px 10px;cursor:pointer;border-bottom:1px solid var(--vscode-panel-border);transition:background .12s;}
-  .chat-item:hover{background:var(--vscode-list-hoverBackground);}
-  .chat-avatar{width:26px;height:26px;flex:0 0 26px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);border-radius:0;flex-shrink:0;}
-  .chat-avatar.task{background:transparent;border:1px dashed var(--vscode-badge-background);color:var(--vscode-badge-foreground);}
-  .chat-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
-  .chat-title{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;}
-  .chat-sub{font-size:10.5px;opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;}
-  .chat-time{font-size:10px;opacity:.45;flex:0 0 auto;white-space:nowrap;}
-  .chat-chev{opacity:.45;flex:0 0 auto;line-height:1;display:flex;align-items:center;}
-  /* Detail (inside task) */
-  #taskDetail{display:none;flex-direction:column;overflow:hidden;flex:1;min-height:0;max-height:58vh;border-top:1px solid var(--vscode-panel-border);}
-  #taskDetail.open{display:flex;}
-  #bugSection{display:flex;flex-direction:column;max-height:62vh;}
-  .detail-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-sideBar-background);}
-  .back-btn{background:none;border:none;color:var(--vscode-foreground);cursor:pointer;font-size:12px;font-weight:600;padding:4px 8px;border-radius:0;opacity:.8;display:flex;align-items:center;gap:4px;}
-  .back-btn:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground);}
-  .detail-title{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
-  .detail-title b{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;}
-  .detail-title span{font-size:10px;opacity:.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .chat-thread{flex:1;overflow-y:auto;padding:12px 10px;display:flex;flex-direction:column;gap:0;background:var(--vscode-sideBar-background);}
-  .bubble{max-width:88%;padding:10px 12px;background:var(--vscode-textCodeBlock-background);border:1px solid var(--vscode-panel-border);border-radius:0;position:relative;}
-  .bubble.mine{align-self:flex-end;background:var(--vscode-button-secondaryBackground);border-color:var(--vscode-focusBorder);}
-  .bubble-head{display:flex;align-items:center;gap:6px;margin-bottom:5px;opacity:.9;}
-  .bubble-num{width:18px;height:18px;border-radius:0;background:var(--vscode-badge-background);color:#fff;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex:0 0 18px;}
-  .bubble-tag{font-family:monospace;font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .bubble-note{font-size:11px;line-height:1.45;opacity:.85;font-style:italic;border-left:2px solid var(--vscode-panel-border);padding-left:7px;margin-top:2px;word-break:break-word;}
-  .rect-btn{margin-top:8px;padding:8px 10px;background:#414339;border:1px solid #75715E;border-radius:0;font-family:monospace;font-size:11px;display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;user-select:none;}
-  .rect-btn:hover{filter:brightness(1.08);}
-  .rect-btn span:last-child{font-family:var(--vscode-font-family);font-size:10px;opacity:.6;}
-  .bubble-actions{display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;}
-  .bubble-actions .mini{font-size:9px;padding:3px 7px;}
-  .flow-list{display:flex;flex-direction:column;gap:0;}
-  .flow-row{display:flex;align-items:center;gap:10px;padding:9px 10px;background:transparent;border:1px solid var(--vscode-panel-border);border-radius:0;cursor:default;}
-  .flow-row ~ .flow-row{margin-top:-1px;}
-  .flow-row:hover{background:var(--vscode-list-hoverBackground);}
-  .flow-num{width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:#fff;color:#1E1F1C;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;line-height:1;}
-  .flow-text{flex:1;min-width:0;font-size:12px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.92;}
-  .flow-text small{opacity:.5;font-size:11px;margin-left:6px;font-weight:400;}
-  .flow-actions{display:flex;gap:4px;opacity:0;visibility:hidden;transition:opacity .14s;flex:0 0 auto;}
-  .flow-row:hover .flow-actions{opacity:1;visibility:visible;}
-  .flow-actions button{background:transparent;border:1px solid var(--vscode-panel-border);color:var(--vscode-foreground);width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border-radius:0;opacity:.75;padding:0;line-height:1;}
-  .flow-actions button:hover{opacity:1;background:var(--vscode-toolbar-hoverBackground);}
-  .flow-detail{display:none;padding:8px 10px;font-size:11px;line-height:1.5;background:var(--vscode-textCodeBlock-background);border:1px solid var(--vscode-panel-border);border-top:none;margin:-1px 0 0 0;}
-  .flow-detail.open{display:block;}
-  .flow-detail code{display:block;margin:2px 0;max-width:100%;}
-  .flow-connector{text-align:center;opacity:.25;font-size:10px;line-height:1;padding:3px 0;}
-  .detail-foot{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--vscode-panel-border);background:var(--vscode-textCodeBlock-background);align-items:center;flex-wrap:wrap;}
   #bugEmpty{padding:2px 12px 10px;font-size:11px;opacity:.55;line-height:1.5;}
   /* ---- Empty state — centralized ---- */
   #empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px;text-align:center;gap:14px;min-height:0;}
@@ -183,7 +124,6 @@
     <button class="mini subtle" id="cancelRecBtn" title="Discard this recording">✕</button>
   </div>
   <div id="projList"></div>
-  <div id="taskDetail"></div>
 </div>
 <div id="empty">
   <div class="big">🎯</div>
@@ -196,10 +136,9 @@
   let vscode; try{ vscode = acquireVsCodeApi(); }catch(e){ vscode = { postMessage:()=>{}, getState:()=>null, setState:()=>{} }; }
   let history = [];
   let bug = null; // BugView from the host
-  let openProjects = {}, openPaths = {}; // legacy expanded ids (kept for compat)
+  let openProjects = {}, openPaths = {}; // expanded ids (persisted across reloads)
   let lastActivePid = null, vizSeq = 0;
   let activeTab = 'tasks';
-  let drill = null; // {pid, id} — current chat drill-in or null for list
   const $ = id => document.getElementById(id);
   function setActiveTab(tab){
     activeTab = tab;
@@ -208,7 +147,6 @@
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', String(on));
     });
-    drill = null;
     if(bug) renderBug();
   }
 
@@ -219,20 +157,11 @@
       if(saved && saved.bugUi){
         openProjects = saved.bugUi.projects || {};
         openPaths = saved.bugUi.paths || {};
-        if(saved.bugUi.drill) drill = saved.bugUi.drill;
-        if(saved.bugUi.activeTab) activeTab = saved.bugUi.activeTab;
       }
-    }catch(e){}
-    try{
-      document.querySelectorAll('.tab-btn').forEach(b=>{
-        const on = (b.id==='tabTasks' && activeTab==='tasks') || (b.id==='tabDesign' && activeTab==='design');
-        b.classList.toggle('active', on);
-        b.setAttribute('aria-selected', String(on));
-      });
     }catch(e){}
   })();
   function saveBugUi(){
-    try{ vscode.setState({ bugUi:{ projects: openProjects, paths: openPaths, drill: drill, activeTab: activeTab } }); }catch(e){}
+    try{ vscode.setState({ bugUi:{ projects: openProjects, paths: openPaths } }); }catch(e){}
   }
 
   function timeAgo(ts){
@@ -244,39 +173,9 @@
     return new Date(ts).toLocaleDateString();
   }
 
-  // ---- Open-source SVG icons (Lucide MIT, inlined) + CDN fallback above ----
-  const ICON_PATHS = {
-    copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h8c1.1 0 2 .9 2 2"/>',
-    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
-    trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>',
-    'chevron-right': '<path d="m9 18 6-6-6-6"/>',
-    'chevron-left': '<path d="m15 18-6-6 6-6"/>',
-    'chevron-down': '<path d="m6 9 6 6 6-6"/>',
-    'chevron-up': '<path d="m18 15-6-6-6 6"/>',
-    target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
-    play: '<polygon points="6 3 20 12 6 21 6 3"/>'
-  };
-  function svgIcon(name, size){
-    const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
-    svg.setAttribute('viewBox','0 0 24 24');
-    svg.setAttribute('width', String(size||14));
-    svg.setAttribute('height', String(size||14));
-    svg.setAttribute('fill','none');
-    svg.setAttribute('stroke','currentColor');
-    svg.setAttribute('stroke-width','2');
-    svg.setAttribute('stroke-linecap','round');
-    svg.setAttribute('stroke-linejoin','round');
-    svg.classList.add('icon-svg');
-    if(size<=12) svg.classList.add('sm');
-    if(size>=16) svg.classList.add('lg');
-    svg.innerHTML = ICON_PATHS[name] || ICON_PATHS.copy;
-    return svg;
-  }
-  function iconBtn(icon, title, fn){
+  function iconBtn(glyph, title, fn){
     const b = document.createElement('button');
-    b.className = 'act'; b.title = title;
-    b.appendChild(svgIcon(icon, 14));
-    b.setAttribute('aria-label', title);
+    b.className = 'act'; b.textContent = glyph; b.title = title;
     b.onclick = ev => { ev.stopPropagation(); fn(ev); };
     return b;
   }
@@ -349,177 +248,75 @@
     return wrap;
   }
 
-  function chatGroupLabel(ts){
-    const d = Date.now() - (Number(ts)||0);
-    if(d < 86400e3) return 'Today';
-    if(d < 86400e3*2) return 'Yesterday';
-    if(d < 86400e3*7) return 'Last 7 days';
-    if(d < 86400e3*30) return 'Last 30 days';
-    return 'Older';
-  }
-  function isValidDrill(){
-    if(!drill || !bug || !bug.projects) return false;
-    const pr = bug.projects.find(x=> x.id===drill.pid);
-    if(!pr) return false;
-    return !!pr.paths.find(x=> x.id===drill.id);
-  }
-  function getAllFiltered(){
-    const out = [];
-    (bug.projects||[]).forEach(p=>{
-      const filtered = p.paths.filter(pt=> activeTab==='tasks' ? pt.kind==='task' : pt.kind!=='task');
-      filtered.forEach(pt=> out.push({p, pt}));
-    });
-    out.sort((a,b)=> (b.pt.createdAt||0)-(a.pt.createdAt||0));
-    return out;
-  }
-  function renderChatList(){
-    const list = $('projList');
-    const all = getAllFiltered();
-    list.innerHTML = '';
-    list.className = 'chat-list';
-    if(!all.length){
-      const hint = document.createElement('div'); hint.className='path-hint';
-      hint.style.padding='18px 14px'; hint.style.textAlign='center'; hint.style.lineHeight='1.5';
-      hint.textContent = activeTab==='tasks' ? 'No task flows yet — press the \uD83D\uDC1E record button, choose Task, then Finish.' : 'No design flows yet — press the \uD83D\uDC1E record button, choose Design, then Finish.';
-      list.appendChild(hint);
-      return;
-    }
-    let curGroup = null;
-    all.forEach(({p, pt})=>{
-      const g = chatGroupLabel(pt.createdAt);
-      if(g !== curGroup){
-        curGroup = g;
-        const head = document.createElement('div'); head.className='chat-group-head';
-        const cnt = all.filter(x=> chatGroupLabel(x.pt.createdAt)===g).length;
-        head.innerHTML = '<span>'+g+'</span><span>'+cnt+'</span>';
-        list.appendChild(head);
-      }
-      const item = document.createElement('div'); item.className='chat-item';
-      const av = document.createElement('div'); av.className='chat-avatar'+(pt.kind==='task'?' task':'');
-      av.textContent = pt.steps && pt.steps.length ? (pt.steps.length>9?'9+':String(pt.steps.length)) : '0';
-      av.title = (pt.steps?pt.steps.length:0)+' steps';
-      const body = document.createElement('div'); body.className='chat-body';
-      const title = document.createElement('div'); title.className='chat-title'; title.textContent = pt.title || '(untitled)';
-      title.title = pt.title||'';
-      const sub = document.createElement('div'); sub.className='chat-sub';
-      const firstTags = (pt.steps||[]).slice(0,2).map(s=> '<'+s.tag+'>').join(' \u2192 ');
-      const more = pt.steps && pt.steps.length>2 ? ' \u2026' : '';
-      sub.textContent = p.name + ' \u00B7 ' + (pt.steps?pt.steps.length:0) + ' steps' + (firstTags ? ' \u00B7 '+firstTags+more : '');
-      body.appendChild(title); body.appendChild(sub);
-      const time = document.createElement('div'); time.className='chat-time'; time.textContent = timeAgo(pt.createdAt);
-      const chev = document.createElement('span'); chev.className='chat-chev'; chev.textContent='\u203A';
-      item.appendChild(av); item.appendChild(body); item.appendChild(time); item.appendChild(chev);
-      item.title = 'Click to open chat';
-      item.onclick = ()=>{ drill={pid:p.id, id:pt.id}; saveBugUi(); renderBug(); };
-      list.appendChild(item);
-    });
-  }
-  function renderTaskDetail(){
-    const detail = $('taskDetail'); detail.innerHTML='';
-    if(!drill || !bug) return;
-    const pr = bug.projects.find(x=> x.id===drill.pid);
-    if(!pr){ drill=null; saveBugUi(); renderBug(); return; }
-    const pt = pr.paths.find(x=> x.id===drill.id);
-    if(!pt){ drill=null; saveBugUi(); renderBug(); return; }
-    const head = document.createElement('div'); head.className='detail-head';
-    const back = document.createElement('button'); back.className='back-btn'; back.textContent='\u2039 Back';
-    back.title='Back to list'; back.onclick=()=>{ drill=null; saveBugUi(); renderBug(); };
-    const tWrap = document.createElement('div'); tWrap.className='detail-title';
-    const b = document.createElement('b'); b.textContent = pt.title || '(untitled)';
-    const sp = document.createElement('span'); sp.textContent = pr.name + ' \u00B7 ' + (pt.kind==='task'?'TASK':'DESIGN') + ' \u00B7 ' + timeAgo(pt.createdAt);
-    tWrap.appendChild(b); tWrap.appendChild(sp);
-    const kind = document.createElement('span'); kind.className='kind-chip '+(pt.kind==='task'?'kind-task':'kind-bug'); kind.textContent = pt.kind==='task'?'TASK':'BUG';
-    const acts = document.createElement('div'); acts.className='row-actions'; acts.style.visibility='visible'; acts.style.display='flex'; acts.style.gap='2px';
-    acts.appendChild(iconBtn('\u29C9','Copy report (markdown)',()=> vscode.postMessage({type:'copyPath', pid:pr.id, id:pt.id})));
-    acts.appendChild(iconBtn('\u2B73','Save report as .md',()=> vscode.postMessage({type:'exportPath', pid:pr.id, id:pt.id})));
-    acts.appendChild(iconBtn('\uD83D\uDDD1','Delete path',()=> { vscode.postMessage({type:'deletePath', pid:pr.id, id:pt.id}); drill=null; saveBugUi(); }));
-    head.appendChild(back); head.appendChild(tWrap); head.appendChild(kind); head.appendChild(acts);
-    detail.appendChild(head);
-    const thread = document.createElement('div'); thread.className='chat-thread';
-    if(!pt.steps || !pt.steps.length){
-      const emp = document.createElement('div'); emp.className='viz-empty'; emp.textContent='No steps recorded.';
-      thread.appendChild(emp);
-    } else {
-      pt.steps.forEach((st,i)=>{
-        const row = document.createElement('div'); row.className='flow-row';
-        const num = document.createElement('span'); num.className='flow-num'; num.textContent=String(i+1);
-        const txt = document.createElement('span'); txt.className='flow-text';
-        const note = st.note ? String(st.note).trim() : '';
-        const tagLabel = '<'+ st.tag + '>' + (st.id ? '#'+String(st.id).slice(0,14) : '');
-        if(note){
-          txt.textContent = note;
-          const sm = document.createElement('small');
-          sm.textContent = tagLabel;
-          txt.appendChild(sm);
-        } else {
-          const base = st.text ? String(st.text).slice(0,28) : tagLabel;
-          txt.textContent = base || tagLabel;
-        }
-        txt.title = (note ? note + ' — ' : '') + tagLabel + (st.cssSelector ? ' · ' + st.cssSelector : '');
-        const acts = document.createElement('div'); acts.className='flow-actions';
-        const copyBtn = document.createElement('button'); copyBtn.title='Copy selector'; copyBtn.textContent='\u29C9';
-        copyBtn.setAttribute('aria-label','Copy');
-        copyBtn.onclick = (ev)=>{ ev.stopPropagation(); vscode.postMessage({type:'copy', value: st.cssSelector || st.xpath || st.outerHTML || tagLabel}); };
-        const dropBtn = document.createElement('button'); dropBtn.title='Details'; dropBtn.textContent='\u25BE';
-        dropBtn.setAttribute('aria-label','Details');
-        acts.appendChild(copyBtn); acts.appendChild(dropBtn);
-        row.appendChild(num); row.appendChild(txt); row.appendChild(acts);
-        const detail = document.createElement('div'); detail.className='flow-detail';
-        detail.innerHTML = '<code>CSS: '+esc(st.cssSelector||'\u2014')+'</code><code>XPath: '+esc(st.xpath||'\u2014')+'</code>' + (st.outerHTML ? '<code>HTML: '+esc(String(st.outerHTML).slice(0,140))+'</code>' : '');
-        dropBtn.onclick = (ev)=>{ ev.stopPropagation(); detail.classList.toggle('open'); };
-        thread.appendChild(row);
-        thread.appendChild(detail);
-      });
-    }
-    detail.appendChild(thread);
-    const vizWrap = document.createElement('div'); vizWrap.className='viz'; vizWrap.style.display='none'; vizWrap.style.margin='0 10px 6px';
-    const foot = document.createElement('div'); foot.className='detail-foot';
-    const vizBtn = document.createElement('button'); vizBtn.className='mini'; vizBtn.textContent='Show diagram';
-    vizBtn.onclick=()=>{
-      const show = vizWrap.style.display==='none';
-      vizWrap.style.display = show ? 'block' : 'none';
-      vizBtn.textContent = show ? 'Hide diagram' : 'Show diagram';
-      if(show) vizWrap.innerHTML = workflowSvg(pt.steps, vizWrap.clientWidth || 280);
-    };
-    const copyBtn = document.createElement('button'); copyBtn.className='mini'; copyBtn.textContent='Copy report';
-    copyBtn.onclick=()=> vscode.postMessage({type:'copyPath', pid:pr.id, id:pt.id});
-    const saveBtnEl = document.createElement('button'); saveBtnEl.className='mini'; saveBtnEl.textContent='Save .md';
-    saveBtnEl.onclick=()=> vscode.postMessage({type:'exportPath', pid:pr.id, id:pt.id});
-    foot.appendChild(vizBtn); foot.appendChild(copyBtn); foot.appendChild(saveBtnEl);
-    detail.appendChild(vizWrap);
-    detail.appendChild(foot);
-  }
   function renderBug(){
     const sec = $('bugSection');
     if(!bug){ sec.style.display = 'none'; return; }
     sec.style.display = 'block';
-    const recDot = $('recDot'); if(recDot) recDot.style.display = bug.recordingActive ? 'inline-block' : 'none';
+    $('recDot').style.display = bug.recordingActive ? 'inline-block' : 'none';
+
     let totalPaths = 0;
     bug.projects.forEach(p => { totalPaths += p.paths.length; });
-    const statsEl = $('bugStats'); if(statsEl) statsEl.textContent = bug.projects.length
-      ? bug.projects.length + (bug.projects.length===1?' project':' projects') + ' \u00B7 ' + totalPaths + (totalPaths===1?' path':' paths')
+    $('bugStats').textContent = bug.projects.length
+      ? bug.projects.length + (bug.projects.length===1?' project':' projects') + ' · ' + totalPaths + (totalPaths===1?' path':' paths')
       : '';
+
     const rb = $('recBar');
     rb.style.display = bug.recordingActive ? 'flex' : 'none';
     if(bug.recordingActive){
-      $('recInfo').textContent = 'REC \u00B7 ' + bug.recordingSteps + ' step' + (bug.recordingSteps===1?'':'s') +
-        (bug.recordingProjectName ? ' \u00B7 ' + bug.recordingProjectName : '');
+      $('recInfo').textContent = 'REC · ' + bug.recordingSteps + ' step' + (bug.recordingSteps===1?'':'s') +
+        (bug.recordingProjectName ? ' · ' + bug.recordingProjectName : '');
     }
-    const list = $('projList'); const detail = $('taskDetail');
-    if(!list || !detail) return;
-    if(drill && !isValidDrill()){ drill=null; saveBugUi(); }
-    if(drill){
-      list.style.display='none';
-      detail.style.display='flex';
-      detail.classList.add('open');
-      renderTaskDetail();
-    } else {
-      detail.style.display='none';
-      detail.classList.remove('open');
-      detail.innerHTML='';
-      list.style.display='flex';
-      renderChatList();
-    }
+
+    const bugEmptyEl = $('bugEmpty'); if(bugEmptyEl) bugEmptyEl.style.display = bug.projects.length ? 'none' : 'block';
+
+    const list = $('projList'); list.innerHTML = '';
+    bug.projects.forEach(p => {
+      const filteredPaths = p.paths.filter(pt => activeTab==='tasks' ? pt.kind==='task' : pt.kind!=='task');
+      const isOpen = !!openProjects[p.id];
+      const isActive = p.id === bug.activeProjectId;
+      const card = document.createElement('div');
+      card.className = 'proj' + (isOpen ? ' open' : '') + (isActive ? ' active' : '');
+
+      const head = document.createElement('div'); head.className = 'proj-head';
+      const chev = document.createElement('span'); chev.className = 'chev proj-chev'; chev.textContent = '▶';
+      const name = document.createElement('span'); name.className = 'proj-name'; name.textContent = p.name;
+      name.title = isActive ? '"' + p.name + '" — recording target' : 'Click to make "' + p.name + '" the recording target';
+      const meta = document.createElement('span'); meta.className = 'proj-meta';
+      meta.textContent = filteredPaths.length + (filteredPaths.length===1?' path':' paths');
+      const acts = document.createElement('div'); acts.className = 'row-actions';
+      acts.appendChild(iconBtn('✎','Rename project', () => vscode.postMessage({type:'renameProject', id:p.id})));
+      acts.appendChild(iconBtn('⧉','Copy ALL path reports', () => vscode.postMessage({type:'copyProject', pid:p.id})));
+      acts.appendChild(iconBtn('🗑','Delete project', () => vscode.postMessage({type:'deleteProject', id:p.id})));
+
+      head.appendChild(chev); head.appendChild(name);
+      if(isActive){
+        const chip = document.createElement('span'); chip.className = 'chip';
+        chip.textContent = '● REC TARGET'; chip.title = 'New recordings are saved into this project';
+        head.appendChild(chip);
+      }
+      head.appendChild(meta); head.appendChild(acts);
+
+      head.onclick = () => {
+        openProjects[p.id] = !openProjects[p.id];
+        saveBugUi();
+        renderBug();
+        if(openProjects[p.id]) vscode.postMessage({type:'selectProject', id:p.id});
+      };
+      card.appendChild(head);
+
+      if(isOpen){
+        const body = document.createElement('div'); body.className = 'paths';
+        if(!filteredPaths.length){
+          const hint = document.createElement('div'); hint.className = 'path-hint';
+          hint.textContent = activeTab==='tasks' ? 'No task flows yet — press the 🐞 record button, choose Task, then Finish.' : 'No design flows yet — press the 🐞 record button, choose Design, then Finish.';
+          body.appendChild(hint);
+        } else {
+          filteredPaths.forEach(pt => body.appendChild(buildPathRow(p, pt)));
+        }
+        card.appendChild(body);
+      }
+      list.appendChild(card);
+    });
   }
 
   // ================= Render: captured elements =================
@@ -601,12 +398,12 @@
           name: 'Demo Project',
           paths: [
             { id: taskId, title: 'Checkout task', kind: 'task', createdAt: Date.now(), steps: [
-              {tag:'button', id:'startBtn', note:'Tapped Start', cssSelector:'#startBtn', xpath:'//*[@id="startBtn"]', outerHTML:'<button id="startBtn">\u25B6 Start Inspecting</button>'},
-              {tag:'div', id:'empty', note:'Confirmed empty state', cssSelector:'div#empty', xpath:'//div[@id="empty"]', outerHTML:'<div id="empty">No elements captured yet.</div>'}
+              {tag:'button', id:'startBtn', note:'Tapped Start'},
+              {tag:'div', id:'empty', note:'Confirmed empty state'}
             ]},
-            { id: designId, title: 'Landing design', kind: 'bug', createdAt: Date.now()-86400e3, steps: [
-              {tag:'header', id:'', note:'Opened header', cssSelector:'header', xpath:'//header', outerHTML:'<header>Demo header</header>'},
-              {tag:'section', id:'hero', note:'Checked hero layout', cssSelector:'section#hero', xpath:'//*[@id="hero"]', outerHTML:'<section id="hero">Hero</section>'}
+            { id: designId, title: 'Landing design', kind: 'bug', createdAt: Date.now()-1000, steps: [
+              {tag:'header', id:'', note:'Opened header'},
+              {tag:'section', id:'hero', note:'Checked hero layout'}
             ]}
           ]
         }],
@@ -642,8 +439,8 @@
       const designId=demoId+'-p-design';
       bug={
         projects:[{id:demoId,name:'Demo Project',paths:[
-          {id:taskId,title:'Checkout task',kind:'task',createdAt:Date.now(),steps:[{tag:'button',id:'startBtn',note:'Tapped Start',cssSelector:'#startBtn',xpath:'//*[@id="startBtn"]',outerHTML:'<button id="startBtn">\u25B6 Start Inspecting</button>'},{tag:'div',id:'empty',note:'Confirmed empty state',cssSelector:'div#empty',xpath:'//div[@id="empty"]',outerHTML:'<div id="empty">...</div>'}]},
-          {id:designId,title:'Landing design',kind:'bug',createdAt:Date.now()-86400e3,steps:[{tag:'header',id:'',note:'Opened header',cssSelector:'header',xpath:'//header',outerHTML:'<header>Demo header</header>'},{tag:'section',id:'hero',note:'Checked hero layout',cssSelector:'section#hero',xpath:'//*[@id="hero"]',outerHTML:'<section id="hero">Hero</section>'}]}
+          {id:taskId,title:'Checkout task',kind:'task',createdAt:Date.now(),steps:[{tag:'button',id:'startBtn',note:'Tapped Start'},{tag:'div',id:'empty',note:'Confirmed empty state'}]},
+          {id:designId,title:'Landing design',kind:'bug',createdAt:Date.now()-1000,steps:[{tag:'header',id:'',note:'Opened header'},{tag:'section',id:'hero',note:'Checked hero layout'}]}
         ]}],
         activeProjectId:demoId,recordingActive:false,recordingSteps:0,recordingProjectName:'Demo Project'
       };

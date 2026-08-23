@@ -1,0 +1,108 @@
+import { BugPath, BugProject, BugStep, ElementData } from '../types';
+import { buildContextText } from './buildContextText';
+
+/** First http(s) URL found across a path's steps — the page the flow ran on. */
+export function firstHttpUrl(steps: BugStep[]): string {
+	const found = steps.map((s) => String(s.element.url || '')).find((u) => /^https?:\/\//i.test(u));
+	return found || '';
+}
+
+/**
+ * Compose the report for one recorded path: an ordered, annotated walkthrough
+ * where every step carries the user's note plus the full attached element
+ * context (selector, HTML path, outer HTML, CSS…).
+ */
+export function composeBugReport(
+	title: string,
+	targetUrl: string,
+	steps: BugStep[]
+): string {
+	const L: string[] = [];
+	L.push('# Bug Flow Report — ' + title);
+	L.push('');
+	if (targetUrl) {
+		L.push('Target: ' + targetUrl);
+	}
+	L.push('Captured: ' + new Date().toLocaleString());
+	L.push('Steps: ' + steps.length);
+
+	steps.forEach((s) => {
+		L.push('');
+		L.push('---');
+		L.push('');
+		L.push('## Step — <' + s.element.tag + '>' + (s.element.id ? '#' + s.element.id : ''));
+		if (s.note) {
+			L.push('');
+			L.push('**Note:** ' + s.note.replace(/\r?\n/g, '\n'));
+		}
+		L.push('');
+		L.push(buildBlock(s.element));
+		L.push('');
+	});
+
+	return L.join('\n');
+}
+
+/** Full markdown document for one stored path (bug or task). */
+export function pathReport(p: BugPath): string {
+	const heading = p.kind === 'task' ? 'Task Flow Report' : 'Bug Flow Report';
+	return composeTypedReport(heading, p.title, p);
+}
+
+function composeTypedReport(kindHeading: string, title: string, p: BugPath): string {
+	const L: string[] = [];
+	L.push('# ' + kindHeading + ' — ' + title);
+	L.push('');
+	const target = firstHttpUrl(p.steps);
+	if (target) L.push('Target: ' + target);
+	L.push('Recorded: ' + new Date(p.createdAt).toLocaleString());
+	L.push('Steps: ' + p.steps.length);
+
+	p.steps.forEach((s) => {
+		L.push('');
+		L.push('---');
+		L.push('');
+		L.push('## Step — <' + s.element.tag + '>' + (s.element.id ? '#' + s.element.id : ''));
+		if (s.note) {
+			L.push('');
+			L.push('**Note:** ' + s.note.replace(/\r?\n/g, '\n'));
+		}
+		L.push('');
+		L.push(buildBlock(s.element));
+		L.push('');
+	});
+
+	return L.join('\n');
+}
+
+/** Compose every path in a project into one shareable markdown document. */
+export function composeProjectReport(p: BugProject): string {
+	const L: string[] = [];
+	L.push('# Debug Project — ' + p.name);
+	L.push('');
+	L.push('Created: ' + new Date(p.createdAt).toLocaleString());
+	L.push('Paths: ' + p.paths.length);
+
+	if (!p.paths.length) {
+		L.push('');
+		L.push('_No recorded paths yet._');
+	}
+
+	p.paths.forEach((pt, i) => {
+		L.push('');
+		L.push('=======================');
+		L.push('');
+		L.push(composeTypedReport(pt.kind === 'task' ? 'Task Flow Report' : 'Bug Flow Report', i + 1 + '. ' + pt.title, pt));
+	});
+
+	return L.join('\n');
+}
+
+/** Standard attached-context block per step. */
+function buildBlock(d: ElementData): string {
+	try {
+		return buildContextText(d);
+	} catch {
+		return d.outerHTML || '';
+	}
+}

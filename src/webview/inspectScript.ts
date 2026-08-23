@@ -256,19 +256,20 @@ export const INJECT_SCRIPT = `
   document.addEventListener('mouseleave', clearHover, true);
   var st = document.createElement('style');
   st.id = '__ecb-style';
+  // Selection highlighter is white — stands out on any page.
   st.textContent = [
-    '.__ecb-hl{outline:2px solid #007acc !important;outline-offset:2px !important;}',
+    '.__ecb-hl{outline:2px solid #FFFFFF !important;outline-offset:2px !important;}',
     '.__ecb-hover{',
     '  position:fixed;display:none;z-index:2147483647;',
-    '  border:1.5px dashed rgba(0,174,239,.95);',
-    '  background:rgba(0,174,239,.08);',
+    '  border:1.5px dashed rgba(255,255,255,.95);',
+    '  background:rgba(255,255,255,.10);',
     '  pointer-events:none;',
     '}',
     '.__ecb-hover-label{',
     '  position:absolute;top:-22px;left:-1.5px;',
     '  font:11px/18px monospace;white-space:nowrap;',
     '  padding:0 6px;border-radius:3px;',
-    '  color:#fff;background:#00aef0;',
+    '  color:#1E1F1C;background:#FFFFFF;',
     '}',
     'html.__ecb-inspect, html.__ecb-inspect *{cursor:crosshair !important;}'
   ].join('');

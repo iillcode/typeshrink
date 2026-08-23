@@ -1,9 +1,24 @@
 import * as vscode from 'vscode';
-import { ElementData } from '../types';
+import { BugView, ElementData } from '../types';
 import { getSidebarHtml } from '../webview/sidebarHtml';
 
 function shortUrl(u: string): string {
 	try { const p = new URL(u); return p.host + p.pathname; } catch { return u; }
+}
+
+/** Debug-flow management surface the sidebar drives. */
+export interface BugFlowApi {
+	view(): BugView;
+	newProject(): void;
+	selectProject(id: string): void;
+	renameProject(id: string): void;
+	deleteProject(id: string): void;
+	deletePath(projectId: string, pathId: string): void;
+	copyPath(projectId: string, pathId: string): void;
+	copyProject(projectId: string): void;
+	exportPath(projectId: string, pathId: string): void;
+	stopRecording(): void;
+	cancelRecording(): void;
 }
 
 /** Dependencies the sidebar needs from the host extension. */
@@ -14,6 +29,7 @@ export interface SidebarDeps {
 	onClearHistory(): void;
 	onShowDetails(d: ElementData, focus?: boolean): void;
 	onOpenBrowser(): void;
+	bug: BugFlowApi;
 }
 
 /** Sidebar "Captured Elements" view — element cards with copy actions. */
@@ -39,6 +55,26 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 				vscode.window.showInformationMessage('Clicked elements history cleared.');
 			} else if (msg.type === 'start') {
 				vscode.commands.executeCommand('elementClickBrowser.open');
+			} else if (msg.type === 'newProject') {
+				this.deps.bug.newProject();
+			} else if (msg.type === 'selectProject') {
+				this.deps.bug.selectProject(String(msg.id));
+			} else if (msg.type === 'renameProject') {
+				this.deps.bug.renameProject(String(msg.id));
+			} else if (msg.type === 'deleteProject') {
+				this.deps.bug.deleteProject(String(msg.id));
+			} else if (msg.type === 'deletePath') {
+				this.deps.bug.deletePath(String(msg.pid), String(msg.id));
+			} else if (msg.type === 'copyPath') {
+				this.deps.bug.copyPath(String(msg.pid), String(msg.id));
+			} else if (msg.type === 'copyProject') {
+				this.deps.bug.copyProject(String(msg.pid));
+			} else if (msg.type === 'exportPath') {
+				this.deps.bug.exportPath(String(msg.pid), String(msg.id));
+			} else if (msg.type === 'stopRec') {
+				this.deps.bug.stopRecording();
+			} else if (msg.type === 'cancelRec') {
+				this.deps.bug.cancelRecording();
 			} else if (msg.type === 'sidebarReady') {
 				this.postUpdate();
 			}
@@ -49,6 +85,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 	postUpdate() {
 		const history = this.deps.getHistory();
 		this.view?.webview.postMessage({ type: 'elements', history, count: history.length });
+		this.view?.webview.postMessage({ type: 'bug', data: this.deps.bug.view() });
 	}
 
 	reveal() {

@@ -2,6 +2,8 @@
 
 A VS Code extension that opens a webview-based browser where **clicking any element** captures its info (tag, id, class, XPath, CSS selector, HTML) and shows it in a sidebar panel.
 
+> 🎨 **Design tokens:** the whole extension uses a fixed palette — see [DESIGN.md](DESIGN.md) before changing any color.
+
 ---
 
 ## 1. Build the Extension

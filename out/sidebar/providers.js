@@ -70,6 +70,36 @@ class SidebarViewProvider {
             else if (msg.type === 'start') {
                 vscode.commands.executeCommand('elementClickBrowser.open');
             }
+            else if (msg.type === 'newProject') {
+                this.deps.bug.newProject();
+            }
+            else if (msg.type === 'selectProject') {
+                this.deps.bug.selectProject(String(msg.id));
+            }
+            else if (msg.type === 'renameProject') {
+                this.deps.bug.renameProject(String(msg.id));
+            }
+            else if (msg.type === 'deleteProject') {
+                this.deps.bug.deleteProject(String(msg.id));
+            }
+            else if (msg.type === 'deletePath') {
+                this.deps.bug.deletePath(String(msg.pid), String(msg.id));
+            }
+            else if (msg.type === 'copyPath') {
+                this.deps.bug.copyPath(String(msg.pid), String(msg.id));
+            }
+            else if (msg.type === 'copyProject') {
+                this.deps.bug.copyProject(String(msg.pid));
+            }
+            else if (msg.type === 'exportPath') {
+                this.deps.bug.exportPath(String(msg.pid), String(msg.id));
+            }
+            else if (msg.type === 'stopRec') {
+                this.deps.bug.stopRecording();
+            }
+            else if (msg.type === 'cancelRec') {
+                this.deps.bug.cancelRecording();
+            }
             else if (msg.type === 'sidebarReady') {
                 this.postUpdate();
             }
@@ -79,6 +109,7 @@ class SidebarViewProvider {
     postUpdate() {
         const history = this.deps.getHistory();
         this.view?.webview.postMessage({ type: 'elements', history, count: history.length });
+        this.view?.webview.postMessage({ type: 'bug', data: this.deps.bug.view() });
     }
     reveal() {
         if (this.view) {
