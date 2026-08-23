@@ -1215,8 +1215,12 @@ export function getSidebarHtml(): string {
     dRedo.length=0;
     if(prop!=='transform'&&prop!=='rotate'&&prop!=='scaleX'&&prop!=='scaleY') dsel.styles[prop]=value;
     // track for the Style-Edits task commit (collapse consecutive identical ops)
+    var recVal = String(value);
+    if(prop==='transform'&&x!==undefined) recVal='translate('+x+'px, '+y+'px)';
+    else if(prop==='rotate') recVal=String(value)+'deg';
+    else if(prop==='scaleX'||prop==='scaleY') recVal='scale('+value+') on '+(prop==='scaleX'?'X':'Y');
     var lastE=dPendingEdits[dPendingEdits.length-1];
-    if(!lastE||lastE.prop!==prop||lastE.value!==String(value)) dPendingEdits.push({prop:prop,value:String(value)});
+    if(!lastE||lastE.prop!==prop||lastE.value!==recVal) dPendingEdits.push({prop:prop,value:recVal});
     vscode.postMessage({type:'designApply',prop:prop,value:value,x:x,y:y});
   }
   function undoD(){

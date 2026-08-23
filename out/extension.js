@@ -59,24 +59,28 @@ function activate(context) {
     // Data of the most recent finished editing session (kept so late commitEdits
     // messages can still resolve their element after designTarget was cleared).
     let styleSessionData = null;
-    /** Commit accumulated Design-tab style edits as a Task under the
-     *  "Style Edits" group (created on demand). Re-editing the same element
-     *  updates its existing task instead of duplicating it. */
+    /** Commit accumulated Design-tab style edits as a compact, AI-oriented Task
+     *  under the "Style Edits" group. Re-editing the same element updates its
+     *  existing task instead of duplicating it. */
     function commitStyleEdits(ecbId, edits) {
         const base = (ecbId && designTarget && designTarget.ecbId === ecbId) ? designTarget :
             (ecbId && styleSessionData && styleSessionData.ecbId === ecbId) ? styleSessionData :
                 (styleSessionData || designTarget);
         if (!base)
             return;
-        // collapse repeated props to their final value, keep first-appearance order
+        // collapse repeated props to their final value, keep first-appearance order,
+        // and drop any empty-valued entries (noise guard)
         const order = [];
         const byProp = new Map();
-        for (const e of edits) {
+        for (const e of edits || []) {
             if (!e || !e.prop)
+                continue;
+            const val = String(e.value ?? '').trim();
+            if (!val)
                 continue;
             if (!order.includes(e.prop))
                 order.push(e.prop);
-            byProp.set(e.prop, String(e.value));
+            byProp.set(e.prop, val);
         }
         if (!order.length)
             return;
@@ -89,14 +93,37 @@ function activate(context) {
         }
         let path = proj.paths.find((t) => t.steps[0] && t.steps[0].element.ecbId === base.ecbId);
         if (!path) {
-            path = { id: uid(), title: '', kind: 'task', createdAt: Date.now(), steps: [] };
+            path = { id: uid(), title: '', kind: 'task', createdAt: Date.now(), steps: [], source: 'design', edits: [] };
             proj.paths.unshift(path);
         }
-        path.steps = order.map((prop) => ({
-            element: { ...base, timestamp: Date.now() },
-            note: prop + ' \u2192 ' + byProp.get(prop)
-        }));
-        path.title = '<' + base.tag + '>' + (base.id ? ' #' + base.id : '') + ' \u00B7 ' + order.length + ' edit' + (order.length === 1 ? '' : 's');
+        // merge edits (later sessions win per property)
+        const mergedOrder = order.slice();
+        const mergedBy = new Map(byProp);
+        for (const prev of path.edits || []) {
+            if (!mergedBy.has(prev.prop)) {
+                mergedOrder.push(prev.prop);
+            }
+            else if (!mergedOrder.includes(prev.prop)) {
+                mergedOrder.unshift(prev.prop);
+            }
+            // note: new values already in byProp win; untouched old props persist below
+            if (!mergedBy.has(prev.prop))
+                mergedBy.set(prev.prop, prev.value);
+        }
+        const finalEdits = mergedOrder.map((prop) => ({ prop, value: mergedBy.get(prop) }));
+        // ONE lean step — identity + markup only; the heavy CSS dumps are noise
+        // for this report format and are stripped.
+        const slim = {
+            tag: base.tag, id: base.id, className: base.className, text: String(base.text || '').slice(0, 120),
+            xpath: base.xpath, cssSelector: base.cssSelector,
+            outerHTML: String(base.outerHTML || '').slice(0, 600),
+            rect: base.rect, url: base.url, timestamp: Date.now(),
+            ecbId: base.ecbId, source: base.source ?? null
+        };
+        path.edits = finalEdits;
+        path.source = 'design';
+        path.steps = [{ element: slim, note: '' }];
+        path.title = '<' + base.tag + '>' + (base.id ? ' #' + base.id : '') + ' \u00B7 ' + finalEdits.length + ' edit' + (finalEdits.length === 1 ? '' : 's');
         saveBugFlows();
         outputChannel.appendLine('[style-edits] committed "' + path.title + '" under "' + proj.name + '"');
         notifyFlowState();
