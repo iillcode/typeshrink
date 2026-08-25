@@ -1,7 +1,7 @@
 {
   "name": "element-click-browser",
-  "displayName": "Element Click Browser",
-  "description": "A webview-based browser where clicking any element sends its info to the extension",
+  "displayName": "Element Browser",
+  "description": "A webview-based browser for previewing your app inside VS Code — with login sessions that survive reloads",
   "version": "0.0.1",
   "publisher": "local-dev",
   "engines": {
@@ -20,28 +20,15 @@
     "commands": [
       {
         "command": "elementClickBrowser.open",
-        "title": "Element Browser: Start Inspecting (Open App URL)"
+        "title": "Element Browser: Open App URL"
       },
       {
         "command": "elementClickBrowser.stop",
-        "title": "Element Browser: Stop Inspecting"
+        "title": "Element Browser: Stop Preview"
       },
       {
         "command": "elementClickBrowser.clearSession",
         "title": "Element Browser: Clear Saved Login Session"
-      },
-      {
-        "command": "elementClickBrowser.clearHistory",
-        "title": "Clear Clicked Elements History",
-        "icon": "$(clear-all)"
-      },
-      {
-        "command": "elementClickBrowser.copyXPath",
-        "title": "Copy XPath of Selected Element"
-      },
-      {
-        "command": "elementClickBrowser.copySelector",
-        "title": "Copy CSS Selector of Selected Element"
       }
     ],
     "viewsContainers": {
@@ -58,26 +45,7 @@
         {
           "type": "webview",
           "id": "elementClickBrowser.sidebarView",
-          "name": "Captured Elements"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "elementClickBrowser.clearHistory",
-          "when": "view == elementClickBrowser.sidebarView",
-          "group": "navigation"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "elementClickBrowser.copyXPath",
-          "when": "view == elementClickBrowser.elementsView"
-        },
-        {
-          "command": "elementClickBrowser.copySelector",
-          "when": "view == elementClickBrowser.elementsView"
+          "name": "Design"
         }
       ]
     }

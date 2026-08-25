@@ -17,20 +17,22 @@ require.cache['mock-vscode'] = {
   exports: {
     window: {
       createWebviewPanel: () => ({
-        webview: { onDidReceiveMessage() {}, set html(v) { calls.push(['html', v.length]); }, get html() { return ''; } },
+        webview: { onDidReceiveMessage() {}, postMessage() {}, set html(v) { calls.push(['html', v.length]); }, get html() { return ''; } },
         dispose() {},
       }),
       createOutputChannel: () => ({ appendLine() {}, show() {} }),
       registerTreeDataProvider() {},
       registerWebviewViewProvider() {},
       showInformationMessage() {},
+      withProgress() {},
     },
     commands: {
       registerCommand: (name, fn) => { calls.push(['command', name]); return { name, fn }; },
       executeCommand() {},
     },
     workspace: { workspaceFolders: [{ uri: { fsPath: '.' } }] },
-    env: { clipboard: { writeText() {} } },
+    env: { clipboard: { writeText() {} }, openExternal() {} },
+    Uri: { parse: (s) => ({ fsPath: s }) },
     TreeItem: class {},
     TreeDataProvider: class {},
     ThemeIcon: class { constructor(icon) { this.icon = icon; } },
@@ -39,6 +41,7 @@ require.cache['mock-vscode'] = {
     EventEmitter: class { fire() {} event = {}; },
     ViewColumn: { One: 1 },
     TreeItemCollapsibleState: { None: 0 },
+    ProgressLocation: { Window: 15 },
   },
 };
 
@@ -47,20 +50,23 @@ console.log('module loaded OK. exports:', Object.keys(m).join(', '));
 
 if (typeof m.activate !== 'function') throw new Error('activate is not a function');
 
-m.activate({ subscriptions: disposables });
+const os = require('os');
+const path = require('path');
+m.activate({
+  subscriptions: disposables,
+  globalStorageUri: { fsPath: path.join(os.tmpdir(), 'ecb-smoke-' + Date.now()) },
+  workspaceState: { get: (k, d) => d, update: () => Promise.resolve() },
+});
 console.log('activate ran OK.');
-console.log('registered items:', JSON.stringify(calls, null, 2));
+console.log('registered items:', JSON.stringify(calls.filter(c => c[0] === 'command'), null, 2));
 
 const expected = [
   'elementClickBrowser.open',
-  'elementClickBrowser.clearHistory',
-  'elementClickBrowser.showDetails',
-  'elementClickBrowser.copyXPath',
-  'elementClickBrowser.copySelector',
+  'elementClickBrowser.stop',
+  'elementClickBrowser.clearSession',
 ];
 const registeredCmds = calls.filter(c => c[0] === 'command').map(c => c[1]);
 for (const cmd of expected) {
   if (!registeredCmds.includes(cmd)) throw new Error('MISSING command: ' + cmd);
 }
 console.log('All', expected.length, 'commands registered ✔');
-console.log('webview html set:', calls.some(c => c[0] === undefined), '| html length entries:', calls.filter(c => c[0] === 'html').length);
