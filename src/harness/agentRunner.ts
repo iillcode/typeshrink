@@ -56,18 +56,13 @@ export class AgentRunner {
 				iterations++;
 				ctx.postEvent({ type: "iteration", current: iterations, max: opts.maxIterations });
 				ctx.postEvent({ type: "status", phase: "thinking" });
+				ctx.log?.("info", `iteration ${iterations}/${opts.maxIterations} — requesting completion`);
 
 				const response = await this.chatWithRetry(ctx, client, messages, openAiTools);
 
 				if (ctx.signal.aborted) {
 					return this.finish(ctx, iterations, "aborted", "Task aborted by user.");
 				}
-
-				ctx.postEvent({
-					type: "assistant_message",
-					text: response.content,
-					reasoning: response.reasoning,
-				});
 
 				if (response.toolCalls.length === 0) {
 					messages.push({ role: "assistant", content: response.content || "(empty response)" });
@@ -84,6 +79,15 @@ export class AgentRunner {
 					continue;
 				}
 
+				// Reasoning-only turns: don't emit an invisible empty message entry.
+				if (response.content.trim() !== "" || response.reasoning) {
+					ctx.postEvent({
+						type: "assistant_message",
+						text: response.content,
+						reasoning: response.reasoning,
+					});
+				}
+
 				messages.push({
 					role: "assistant",
 					content: response.content || null,
@@ -98,7 +102,12 @@ export class AgentRunner {
 					messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: outcome });
 
 					if (call.function.name === COMPLETION_TOOL) {
-						return this.finish(ctx, iterations, "completed", extractResultText(outcome));
+						const summary = extractResultText(outcome);
+						// The completion tool's result IS the final answer — post it as a
+						// visible assistant message, otherwise the chat shows only the
+						// tool steps and the user never sees the response.
+						ctx.postEvent({ type: "assistant_message", text: summary });
+						return this.finish(ctx, iterations, "completed", summary);
 					}
 				}
 			}
@@ -137,23 +146,32 @@ export class AgentRunner {
 		messages: ChatMessage[],
 		openAiTools: ReturnType<typeof toOpenAiTools>,
 	): Promise<import("./types").LlmResponse> {
-		const MAX_ATTEMPTS = 3;
+		const MAX_ATTEMPTS = 5;
 		for (let attempt = 1; ; attempt++) {
+			// Streams that keep dying mid-generation get retried as a single
+			// non-streaming request — gateways that reset long SSE connections
+			// usually accept a plain request/response for the same payload.
+			const nonStreaming = attempt >= 3;
+			if (nonStreaming) ctx.log?.("warn", "falling back to non-streaming request for this completion");
 			try {
 				return await client.chat(messages, openAiTools, {
 					onTextDelta: (d) => ctx.postEvent({ type: "assistant_delta", text: d }),
 					onReasoningDelta: (d) => ctx.postEvent({ type: "reasoning_delta", text: d }),
-				}, ctx.signal);
+				}, ctx.signal, { nonStreaming });
 			} catch (err) {
 				if (err instanceof AbortedError || ctx.signal.aborted) throw err;
-				if (!AgentRunner.isTransient(err) || attempt >= MAX_ATTEMPTS) throw err;
+				if (!AgentRunner.isTransient(err) || attempt >= MAX_ATTEMPTS) {
+					ctx.log?.("error", `Completion failed after ${attempt} attempt(s): ${err instanceof Error ? err.message : String(err)}`);
+					throw err;
+				}
+				ctx.log?.("warn", `Transient stream drop (attempt ${attempt}/${MAX_ATTEMPTS}): ${err instanceof Error ? err.message : String(err)}`);
 				ctx.postEvent({ type: "stream_reset" });
 				ctx.postEvent({
 					type: "status",
 					phase: "executing",
-					detail: `connection lost — retrying (${attempt + 1}/${MAX_ATTEMPTS})`,
+					detail: `connection lost during generation — resuming attempt ${attempt + 1}/${MAX_ATTEMPTS}`,
 				});
-				await new Promise((r) => setTimeout(r, 600 * attempt));
+				await new Promise((r) => setTimeout(r, Math.min(800 * attempt, 4000)));
 				if (ctx.signal.aborted) throw err;
 			}
 		}
@@ -167,7 +185,7 @@ export class AgentRunner {
 			String((err as { cause?: { code?: string; message?: string } }).cause?.message ?? ""),
 			String((err as { code?: string }).code ?? ""),
 		].join(" ").toLowerCase();
-		return /terminated|econnreset|socket hang up|epipe|fetch failed|network|premature close|other side closed/.test(haystack);
+		return /terminated|econnreset|socket hang up|epipe|fetch failed|network|premature close|other side closed|connection (closed|reset)|aborted connection/.test(haystack);
 	}
 
 	private async executeCall(
@@ -224,6 +242,7 @@ export class AgentRunner {
 			return output;
 		} catch (err) {
 			const msg = `Tool ${tool.name} failed: ${err instanceof Error ? err.message : String(err)}`;
+			ctx.log?.("error", msg);
 			ctx.postEvent({ type: "tool_result", callId: call.id, ok: false, output: truncate(msg, 1200) });
 			return msg;
 		}

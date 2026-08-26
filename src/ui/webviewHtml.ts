@@ -11,7 +11,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 	const script = `
 (function () {
   var vscode = acquireVsCodeApi();
-  var state = { profiles: [], activeProfileId: "", autoApprove: false, busy: false, settingsVisible: false, transcript: [], pendingApproval: null, activeLabel: "", chats: [], activeChatId: "", bgBusy: false, runningChatId: "" };
+  var state = { profiles: [], activeProfileId: "", autoApprove: false, busy: false, settingsVisible: false, transcript: [], pendingApproval: null, activeLabel: "", chats: [], activeChatId: "", bgBusy: false, runningChatId: "", mode: "build", planReady: false };
   var DEFAULT_BASE_URL = "https://opencode.ai/zen/v1";
   var chatsView = false;
   var editingProfileId = undefined; // undefined = list view, null = new, string = edit
@@ -21,6 +21,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   var streamEl = null;
   var streamActive = false;
   var reasoningBuf = "";
+  var reasoningCollapsedOnce = false;
   var stepsDone = 0;
   var actionText = "";
   // Incremental-DOM bookkeeping: how many transcript entries are already in the
@@ -33,6 +34,86 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   // scrolled up. Computed BEFORE each paint (never from post-mutation layout,
   // which caused the view to get stuck at the top of growing messages).
   var followStream = true;
+  // Set when the viewed chat changes locally (chat-row click): the next state
+  // push must do a FULL re-render, not an incremental append.
+  var forceFullRender = false;
+  // Detects list changes (create/delete/rename/spinner) while the history view
+  // is open — incremental sync has no chat-list partial updater, so repaint.
+  var lastChatsSig = "";
+  function chatsSignature() {
+    return (state.runningChatId || "") + "#" + (state.chats || []).map(function (c) { return c.id + "@" + c.updatedAt; }).join("|");
+  }
+
+  // @-mention file picker (Codex-style): typing "@" in the composer opens a
+  // workspace file dropdown; picked files become removable context chips.
+  var allFiles = [];
+  var filesRequested = false;
+  var mention = null; // active token: { query, start } | null
+  var mentionItems = [];
+  var mentionIndex = 0;
+  var attached = []; // [{ path }]
+
+  // ------------------------------------------------------------------
+  // Real file-type logos via Iconify CDN (vscode-icons set). Falls back to
+  // the generic file glyph if offline / unknown icon (capture-phase handler).
+  // ------------------------------------------------------------------
+  var ICON_CDN = "https://api.iconify.design/vscode-icons/";
+  var FALLBACK_ICON = "default-file";
+  var EXT_ICONS = {
+    js: "file-type-js-official", mjs: "file-type-js-official", cjs: "file-type-js-official",
+    jsx: "file-type-reactjs", ts: "file-type-typescript", mts: "file-type-typescript", cts: "file-type-typescript",
+    tsx: "file-type-reactts",
+    json: "file-type-json", jsonc: "file-type-json", html: "file-type-html", htm: "file-type-html",
+    css: "file-type-css", scss: "file-type-scss", sass: "file-type-sass", less: "file-type-less",
+    py: "file-type-python", pyi: "file-type-python", rb: "file-type-ruby", php: "file-type-php",
+    java: "file-type-java", kt: "file-type-kotlin", kts: "file-type-kotlin", go: "file-type-go",
+    rs: "file-type-rust", c: "file-type-c", h: "file-type-c", cpp: "file-type-cpp", cc: "file-type-cpp",
+    cxx: "file-type-cpp", hpp: "file-type-cpp", hh: "file-type-cpp", cs: "file-type-csharp",
+    swift: "file-type-swift", dart: "file-type-dartlang", scala: "file-type-scala",
+    sh: "file-type-shell", bash: "file-type-shell", zsh: "file-type-shell",
+    bat: "file-type-bat", cmd: "file-type-bat", ps1: "file-type-powershell", psm1: "file-type-powershell",
+    md: "file-type-markdown", mdx: "file-type-markdown", yml: "file-type-yaml", yaml: "file-type-yaml",
+    toml: "file-type-toml", ini: "file-type-ini", cfg: "file-type-ini", conf: "file-type-ini",
+    sql: "file-type-sql", xml: "file-type-xml", svg: "file-type-svg", vue: "file-type-vue",
+    svelte: "file-type-svelte", txt: "file-type-text", log: "file-type-log",
+    png: "file-type-image", jpg: "file-type-image", jpeg: "file-type-image", gif: "file-type-image",
+    webp: "file-type-image", bmp: "file-type-image", ico: "file-type-image",
+    mp4: "file-type-video", mov: "file-type-video", avi: "file-type-video", mkv: "file-type-video",
+    webm: "file-type-video",
+    mp3: "file-type-audio", wav: "file-type-audio", ogg: "file-type-audio", flac: "file-type-audio",
+    zip: "file-type-zip", gz: "file-type-zip", rar: "file-type-zip", "7z": "file-type-zip",
+    tar: "file-type-zip", pdf: "file-type-pdf2", exe: "file-type-binary", dll: "file-type-binary",
+    bin: "file-type-binary", woff: "file-type-font", woff2: "file-type-font", ttf: "file-type-font",
+    otf: "file-type-font", eot: "file-type-font"
+  };
+  var BASENAME_ICONS = {
+    dockerfile: "file-type-docker", makefile: "file-type-makefile", license: "file-type-license",
+    "license.md": "file-type-license", "license.txt": "file-type-license",
+    ".gitignore": "file-type-git", ".gitattributes": "file-type-git", ".gitmodules": "file-type-git"
+  };
+
+  function baseName(p) {
+    return String(p).slice(String(p).lastIndexOf("/") + 1);
+  }
+  function iconForPath(p) {
+    var name = baseName(p).toLowerCase();
+    if (BASENAME_ICONS[name]) return BASENAME_ICONS[name];
+    var dot = name.lastIndexOf(".");
+    var ext = dot > 0 ? name.slice(dot + 1) : "";
+    return EXT_ICONS[ext] || FALLBACK_ICON;
+  }
+  function fileImg(p) {
+    return "<img class='fi' alt='' src='" + ICON_CDN + iconForPath(p) + ".svg'>";
+  }
+  // error doesn't bubble — capture phase catches every <img class=fi> load
+  // failure and swaps in the generic file logo (guards against loops too).
+  document.addEventListener("error", function (ev) {
+    var t = ev.target;
+    if (!t || t.tagName !== "IMG" || !t.classList.contains("fi")) return;
+    if (t.getAttribute("data-fb")) return;
+    t.setAttribute("data-fb", "1");
+    t.src = ICON_CDN + FALLBACK_ICON + ".svg";
+  }, true);
 
   var IC = {
     plus: "<svg width='14' height='14' viewBox='0 0 16 16' fill='none'><path d='M8 3v10M3 8h10' stroke='currentColor' stroke-width='1.5' stroke-linecap='round'/></svg>",
@@ -50,8 +131,56 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     chat: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M14 8A6 6 0 1 1 8 2a6 6 0 0 1 6 6Z' stroke='currentColor' stroke-width='1.2'/><path d='m4.5 13.5-.9 1.8 2.6-.9' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/></svg>",
     check: "<svg width='11' height='11' viewBox='0 0 16 16' fill='none'><path d='m3 8.5 3 3L13 5' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg>",
     clock: "<svg width='14' height='14' viewBox='0 0 16 16' fill='none'><circle cx='8' cy='8' r='6.2' stroke='currentColor' stroke-width='1.3'/><path d='M8 4.6V8l2.4 1.6' stroke='currentColor' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/></svg>",
-    trash: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M2.5 4.5h11M6.5 2.5h3M4 4.5l.7 9h6.6l.7-9M6.7 7v4.5M9.3 7v4.5' stroke='currentColor' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/></svg>"
+    trash: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M2.5 4.5h11M6.5 2.5h3M4 4.5l.7 9h6.6l.7-9M6.7 7v4.5M9.3 7v4.5' stroke='currentColor' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/></svg>",
+    modePlan: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M1.5 3.5 5.5 2l5 1.5L14.5 2v10.5l-4 1.5-5-1.5-4 1.5V3.5Z' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/><path d='M5.5 2v11M10.5 3.5v11' stroke='currentColor' stroke-width='1.2'/></svg>",
+    modeBuild: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='m5.5 4-3.5 4 3.5 4M10.5 4l3.5 4-3.5 4' stroke='currentColor' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/></svg>"
   };
+
+  // ------------------------------------------------------------------
+  // Tiny syntax highlighter for fenced code (js/ts/py/json/css/html/sh...)
+  // ------------------------------------------------------------------
+
+  var HL_KW = "function|return|if|else|elif|for|while|class|const|let|var|new|import|from|export|default|async|await|try|catch|finally|throw|typeof|instanceof|interface|type|extends|implements|public|private|protected|static|readonly|enum|switch|case|break|continue|do|in|of|not|and|or|is|with|as|yield|this|super|null|undefined|true|false|void|never|any|string|number|boolean|def|lambda|None|True|False|pass|raise|except|print|require|module|exports|echo|cd|rm|mkdir|npm|npx|git";
+  function hlLangComment(l) {
+    if (l === "py" || l === "python" || l === "sh" || l === "bash" || l === "shell" || l === "yaml" || l === "yml" || l === "toml" || l === "ini") return "#[^\\n]*";
+    return "\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/";
+  }
+  function hl(code, lang) {
+    var l = String(lang || "").toLowerCase();
+    var src = esc(code);
+    var commentRe = hlLangComment(l);
+    var re = new RegExp(
+      "(" + commentRe + ")" +
+      '|("[^"]*")' +
+      "|('[^']*')" +
+      "|(&lt;\\/?[a-zA-Z][^&]*?&gt;)" +
+      "|\\b(0[xX][0-9a-fA-F]+|[0-9]+(?:\\.[0-9]+)?)\\b" +
+      "|\\b(" + HL_KW + ")\\b",
+      "g"
+    );
+    return src.replace(re, function (m, c, s2, s1, t, n, k) {
+      if (c) return "<span class='tok-c'>" + m + "</span>";
+      if (s2 || s1) return "<span class='tok-s'>" + m + "</span>";
+      if (t) return "<span class='tok-t'>" + m + "</span>";
+      if (n) return "<span class='tok-n'>" + m + "</span>";
+      if (k) return "<span class='tok-k'>" + m + "</span>";
+      return m;
+    });
+  }
+
+  /** Escape text but render fenced code blocks as highlighted code (used for reasoning). */
+  function richText(src) {
+    var blocks = [];
+    var text = String(src == null ? "" : src).replace(/\\\`\\\`(\\w*)[ \\t]?\\n?([\\s\\S]*?)(?:\\\`\\\`|$)/g, function (_, lang, code) {
+      blocks.push({ lang: lang, code: code.replace(/\\n$/, "") });
+      return "\\u0000HL" + (blocks.length - 1) + "\\u0000";
+    });
+    var html = esc(text);
+    return html.replace(/\\u0000HL(\\d+)\\u0000/g, function (_, i) {
+      var b = blocks[Number(i)];
+      return "<pre><code>" + hl(b.code, b.lang) + "</code></pre>";
+    });
+  }
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -76,7 +205,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     }).join("");
     html = lines.replace(/\\u0000CB(\\d+)\\u0000/g, function (_, i) {
       var b = blocks[Number(i)];
-      return "<pre><code>" + b.code + "</code></pre>";
+      return "<pre><code>" + hl(b.code, b.lang) + "</code></pre>";
     });
     return html;
   }
@@ -105,6 +234,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
     root.innerHTML = parts.join("");
     wire();
+    syncCtxChips();
     currentView = desiredView();
     renderedCount = state.transcript.length;
     if (!state.settingsVisible && editingProfileId === undefined && !chatsView) syncApproval();
@@ -134,23 +264,26 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     parts.push("<span class='settings-title'>Chats</span>");
     parts.push("<span style='width:26px'></span>");
     parts.push("</div>");
-    parts.push("<button id='btn-new-chat' class='btn primary wide'>" + IC.plus.replace("width='14' height='14'", "width='12' height='12'") + " New chat</button>");
+    parts.push("<button id='btn-new-chat' class='btn primary wide new-chat-btn'>" + IC.plus.replace("width='14' height='14'", "width='12' height='12'") + " New chat</button>");
     var list = Array.isArray(state.chats) ? state.chats : [];
     if (list.length === 0) {
       parts.push("<div class='hint' style='text-align:center;margin-top:24px'>No chats yet. Send your first request.</div>");
     }
+    parts.push("<div class='chat-list'>");
     list.forEach(function (c) {
       var isActive = c.id === state.activeChatId;
+      var isRunning = c.id === state.runningChatId;
       parts.push(
         "<div class='chat-row" + (isActive ? " active" : "") + "' data-chat-id='" + esc(c.id) + "'>" +
         "<div class='chat-main'>" +
-        "<div class='chat-title'>" + esc(c.title || "New chat") + "</div>" +
+        "<div class='chat-title'>" + (isRunning ? "<span class='spinner run-dot'></span>" : "") + esc(c.title || "New chat") + "</div>" +
         "<div class='chat-date muted small'>" + fmtDate(c.updatedAt) + "</div>" +
         "</div>" +
         "<button class='icon-btn del-chat' data-del-chat='" + esc(c.id) + "' title='Delete chat'>" + IC.trash + "</button>" +
         "</div>"
       );
     });
+    parts.push("</div>");
     parts.push("</div>");
     return parts.join("");
   }
@@ -176,11 +309,21 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   // ------------------------------------------------------------------
 
   function entryHTML(entry) {
-    if (entry.kind === "user") return "<div class='turn-user'>" + mdRender(entry.text) + "</div>";
+    if (entry.kind === "user") {
+      var html = "<div class='turn-user'>" + mdRender(entry.text || "");
+      if (entry.files && entry.files.length) {
+        html += "<div class='msg-files'>";
+        for (var i = 0; i < entry.files.length; i++) {
+          html += "<span class='msg-file' title='" + esc(entry.files[i]) + "'>" + fileImg(entry.files[i]) + "<span>" + esc(entry.files[i]) + "</span></span>";
+        }
+        html += "</div>";
+      }
+      return html + "</div>";
+    }
     if (entry.kind === "assistant") {
       var html = "<div class='turn-assistant'><div class='md'>" + mdRender(entry.text) + "</div>";
       if (entry.reasoning) {
-        html += "<details class='reasoning'><summary>Reasoning</summary><div class='pre'>" + esc(entry.reasoning) + "</div></details>";
+        html += "<details class='reasoning'><summary>Reasoning</summary><div class='pre'>" + richText(entry.reasoning) + "</div></details>";
       }
       return html + "</div>";
     }
@@ -191,6 +334,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   function syncTranscript() {
     var t = document.getElementById("transcript");
     if (!t) return;
+    // Bookkeeping desync (shouldn't happen): rebuild instead of silently skipping.
+    if (state.transcript.length < renderedCount) { render(); return; }
     var empty = t.querySelector(".empty");
     var appendedUser = false;
     while (renderedCount < state.transcript.length) {
@@ -239,7 +384,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     }
     if (send) send.title = state.busy ? "Interrupt & send (Enter)" : "Send (Enter)";
     var ta = document.getElementById("input");
-    if (ta) ta.placeholder = state.busy ? "Send to interrupt & start a new task..." : "Describe a task...";
+    if (ta) ta.placeholder = state.busy ? "Send to interrupt & start a new task..." : composerPlaceholder();
   }
 
   function syncApproval() {
@@ -293,13 +438,68 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     if (span) span.innerHTML = label; else mc.innerHTML = IC.chip + "<span>" + label + "</span>";
   }
 
+  function syncModeChip() {
+    var mc = document.getElementById("mode-chip");
+    if (!mc) return;
+    var isPlan = state.mode === "plan";
+    mc.className = "pill mode" + (isPlan ? " plan" : "");
+    mc.innerHTML = (isPlan ? IC.modePlan : IC.modeBuild) + "<span>" + (isPlan ? "Plan" : "Build") + "</span>";
+    closeModeMenu();
+  }
+
+  /** Plan→build handoff card, shown after a plan-mode run completes. */
+  function syncPlanPrompt() {
+    var wrap = document.querySelector(".composer-wrap");
+    if (!wrap) return;
+    var existing = wrap.querySelector(".plan-card");
+    if (!state.planReady) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return; // already shown
+    var div = document.createElement("div");
+    div.className = "approval plan-card";
+    div.innerHTML =
+      "<div class='approval-head'>Plan ready</div>" +
+      "<div class='approval-title'>Switch to Build mode and implement?</div>" +
+      "<div class='approval-actions'>" +
+      "<button class='btn primary' data-plan-action='continue'>Continue in Build</button>" +
+      "<button class='btn' data-plan-action='dismiss'>Stay in Plan</button>" +
+      "</div>";
+    wrap.insertBefore(div, document.querySelector(".composer"));
+    Array.prototype.forEach.call(div.querySelectorAll("[data-plan-action]"), function (b) {
+      b.onclick = function () {
+        vscode.postMessage({ type: b.getAttribute("data-plan-action") === "continue" ? "continueInBuild" : "dismissPlanPrompt" });
+        b.disabled = true;
+      };
+    });
+  }
+
   function syncDynamic() {
     syncWorkingRow();
     syncSendStop();
     syncApproval();
     syncAutoPill();
     syncModelChip();
+    syncModeChip();
+    syncPlanPrompt();
+    syncBgPill();
+    syncCtxChips();
     syncTranscript();
+  }
+
+  function syncBgPill() {
+    var wrap = document.querySelector(".composer-wrap");
+    if (!wrap) return;
+    var pill = wrap.querySelector(".bg-pill");
+    if (state.bgBusy && !pill && !wrap.querySelector(".working-row")) {
+      var div = document.createElement("div");
+      div.className = "bg-pill";
+      div.innerHTML = "<span class='spinner'></span>Agent is working in another chat";
+      wrap.insertBefore(div, wrap.firstChild);
+    } else if (!state.bgBusy && pill) {
+      pill.remove();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -333,6 +533,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
     // ---------- composer (Codex-style rounded box) ----------
     parts.push("<div class='composer-wrap'>");
+    if (state.bgBusy) {
+      parts.push("<div class='bg-pill'><span class='spinner'></span>Agent is working in another chat</div>");
+    }
     if (state.busy) {
       parts.push(
         "<div class='working-row'>" +
@@ -343,18 +546,28 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     }
     parts.push("<div class='composer'>");
     parts.push("<textarea id='input' rows='1' placeholder='" +
-      (state.busy ? "Send to interrupt &amp; start a new task..." : "Describe a task...") +
+      (state.busy ? "Send to interrupt &amp; start a new task..." : composerPlaceholder()) +
       "'></textarea>");
     parts.push("<div class='composer-foot'>");
-    parts.push("<button id='aa-toggle' class='pill" + (state.autoApprove ? " on" : "") + "' title='Auto-approve writes &amp; commands (this session)'>" +
-      IC.bolt + "<span>Auto" + (state.autoApprove ? " on" : "") + "</span></button>");
+    parts.push("<button id='mode-chip' class='pill mode" + (state.mode === "plan" ? " plan" : "") + "' title='Agent mode — click to change'>" +
+      (state.mode === "plan" ? IC.modePlan : IC.modeBuild) + "<span>" + (state.mode === "plan" ? "Plan" : "Build") + "</span></button>");
     parts.push("<button id='model-chip' class='pill model' title='Switch model profile'>" + IC.chip + "<span>" + esc(state.activeLabel || "(no model)") + "</span></button>");
     if (state.busy) {
       parts.push("<button id='btn-stop' class='send-btn stop' title='Stop'>" + IC.stop + "</button>");
     }
     parts.push("<button id='btn-send' class='send-btn' title='" + (state.busy ? "Interrupt & send (Enter)" : "Send (Enter)") + "'>" + IC.up + "</button>");
     parts.push("</div></div>");
+    // Below the input bar: session-level toggles (kept out of the text area).
+    parts.push("<div class='composer-below'>");
+    parts.push("<button id='aa-toggle' class='pill" + (state.autoApprove ? " on" : "") + "' title='Auto-approve writes &amp; commands (this session)'>" +
+      IC.bolt + "<span>Auto" + (state.autoApprove ? " on" : "") + "</span></button>");
+    parts.push("</div>");
     return parts.join("");
+  }
+
+  function composerPlaceholder() {
+    if (state.mode === "plan") return "Describe what to plan... (read-only)";
+    return "Describe a task...";
   }
 
   function workingLabel() {
@@ -383,12 +596,20 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     return IC.file;
   }
 
+  /** First path-like token in a tool's arg summary, for logo lookup in cards. */
+  function toolFileArg(entry) {
+    var s = String((entry && entry.argsSummary) || "");
+    var m = s.match(/([\\w@.-]+\\.[A-Za-z0-9]{1,8})/);
+    return m ? m[1] : null;
+  }
+
   function toolRow(entry) {
     var cls = entry.status === "ok" ? "ok" : entry.status === "error" ? "error" : entry.status === "denied" ? "denied" : "running";
     var statusIcon = { ok: IC.check, error: "&#10007;", denied: "&#9940;", running: "" }[entry.status];
+    var fileRef = toolFileArg(entry);
     var parts = ["<details class='act " + cls + "' data-callid='" + esc(entry.callId || "") + "'" + (entry.status === "ok" ? "" : " open") + ">"];
     parts.push("<summary>");
-    parts.push("<span class='act-icon'>" + toolIcon(entry.name) + "</span>");
+    parts.push("<span class='act-icon'>" + (fileRef ? "<span class='act-fileicon'>" + fileImg(fileRef) + "</span>" : toolIcon(entry.name)) + "</span>");
     parts.push("<span class='act-name'>" + esc(entry.name) + "</span>");
     if (entry.argsSummary) parts.push("<span class='act-args'>" + esc(entry.argsSummary) + "</span>");
     parts.push("<span class='act-status'>" + (entry.status === "running" ? "<span class='mini-spinner'></span>" : statusIcon) + "</span>");
@@ -486,7 +707,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     if (reasoningBuf) {
       // Collapses automatically once real content starts arriving (see appendStream).
       html += "<details class='reasoning stream-reasoning'" + (streamBuf ? "" : " open") + ">" +
-        "<summary>Thinking</summary><div class='pre'>" + esc(reasoningBuf) + "</div></details>";
+        "<summary>Thinking</summary><div class='pre'>" + richText(reasoningBuf) + "</div></details>";
     }
     html += "<div class='md streaming'>" + mdRender(streamBuf) + "</div>";
     streamEl.innerHTML = html;
@@ -497,8 +718,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     var md = streamEl.querySelector(".md");
     if (md) md.innerHTML = mdRender(streamBuf);
     var d = streamEl.querySelector(".stream-reasoning");
-    if (d && streamBuf) d.open = false;
-    scrollBottom();
+    // Collapse once when real content starts — never re-collapse afterwards,
+    // so a user who expanded the reasoning to read it keeps it open.
+    if (d && streamBuf && !reasoningCollapsedOnce) {
+      d.open = false;
+      reasoningCollapsedOnce = true;
+    }
+    scrollBottom(false);
   }
 
   function appendStream(delta) {
@@ -523,7 +749,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     queuePaint(function () {
       var pre = streamEl ? streamEl.querySelector(".stream-reasoning .pre") : null;
       if (pre) {
-        pre.textContent = reasoningBuf;
+        pre.innerHTML = richText(reasoningBuf);
         pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
       }
       scrollBottom(false);
@@ -538,6 +764,24 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     streamBuf = "";
     reasoningBuf = "";
     streamActive = false;
+    reasoningCollapsedOnce = false;
+  }
+
+  /**
+   * Preserve whatever is currently streaming as a transcript entry. Called when
+   * a run ends without a committed assistant_message (Stop, interrupt, error) —
+   * discarding that text is what made responses look "trimmed" in the chat.
+   */
+  function commitLivePartialIfAny(interrupted) {
+    if (!streamActive || (!streamBuf && !reasoningBuf)) return;
+    var text = streamBuf;
+    if (interrupted && text) text += "\\n\\n*(interrupted)*";
+    state.transcript.push({
+      kind: "assistant",
+      text: text || "*(no text output before interruption)*",
+      reasoning: reasoningBuf || undefined,
+    });
+    if (chatVisible()) syncTranscript();
   }
 
   function scrollBottom(force) {
@@ -610,18 +854,28 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
       case "state": {
         var wasBusy = state.busy;
         var nextBusy = !!(msg.state && msg.state.busy);
+        // Run ended without a committed message (stop/interrupt/error)?
+        // Keep what was streamed so nothing appears trimmed from the chat.
+        var runEnded = wasBusy && !nextBusy;
         state = Object.assign(state, msg.state);
-        // Reset the buffer when a run starts or ends; KEEP it on mid-run pushes
-        // (approval, auto-approve toggle, ...) so streamed text never vanishes.
-        if (!nextBusy || !wasBusy) {
+        if (runEnded) {
+          commitLivePartialIfAny(true);
+          finalizeStream();
+          stepsDone = 0;
+          actionText = "";
+        } else if (!wasBusy && nextBusy) {
+          // fresh run: clear any stale leftovers silently
           finalizeStream();
           stepsDone = 0;
           actionText = "";
         }
         var viewChanged = currentView !== desiredView();
         var transcriptReset = state.transcript.length < renderedCount;
-        if (viewChanged || transcriptReset) {
+        var chatsChanged = chatsSignature() !== lastChatsSig;
+        lastChatsSig = chatsSignature();
+        if (viewChanged || transcriptReset || forceFullRender || (chatsChanged && currentView === "chats")) {
           render(); // structural change only
+          forceFullRender = false;
         } else {
           syncDynamic(); // in-place update — no flicker
         }
@@ -646,6 +900,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         reasoningBuf = "";
         break;
       case "assistant_message": {
+        // Ignore empty, invisible turns (reasoning-only tool dispatch).
+        if (!String(msg.text || "").trim() && !msg.reasoning) break;
         // Commit locally so the finished message shows immediately, even before
         // the next full-state push arrives.
         finalizeStream();
@@ -697,6 +953,11 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         if (state.busy) { actionText = ""; updateWorkingRow(); }
         break;
       }
+      case "fileList":
+        allFiles = Array.isArray(msg.files) ? msg.files : [];
+        filesRequested = true;
+        if (mention) { refreshMentionItems(); showMention(); }
+        break;
       case "modelsResult":
         if (msg.error) { lastModelsError = msg.error; draftModels = []; }
         else { lastModelsError = ""; draftModels = msg.models || []; }
@@ -708,6 +969,237 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   function tailOutput(s) {
     return s.length > 4000 ? s.slice(-4000) : s;
   }
+
+  // ------------------------------------------------------------------
+  // @-mention file picker (Codex-style)
+  // ------------------------------------------------------------------
+
+  /** Extract an active "@query" token ending at the caret, or null. */
+  function caretToken(el) {
+    var pos = el.selectionStart == null ? el.value.length : el.selectionStart;
+    var before = el.value.slice(0, pos);
+    var m = before.match(/(?:^|[\\s(])@([^\\s@]*)$/);
+    if (!m) return null;
+    return { query: m[1], start: pos - m[1].length - 1 };
+  }
+
+  function scorePath(p, ql) {
+    if (!ql) return 50;
+    var pl = p.toLowerCase();
+    var cut = pl.lastIndexOf("/") + 1;
+    var base = pl.slice(cut);
+    var bi = base.indexOf(ql);
+    var pi = pl.indexOf(ql);
+    if (bi >= 0) return 300 - Math.min(bi, 100) + Math.max(0, 20 - base.length);
+    if (pi >= 0) return 150 - Math.min(pi - cut < 0 ? pi : pi, 100);
+    var j = 0; // subsequence fallback ("src" matches "s-r-c")
+    for (var i = 0; i < pl.length && j < ql.length; i++) {
+      if (pl[i] === ql[j]) j++;
+    }
+    return j === ql.length ? 10 : -1;
+  }
+
+  function refreshMentionItems() {
+    mentionItems = [];
+    if (!mention) return;
+    var scored = [];
+    for (var i = 0; i < allFiles.length; i++) {
+      var sc = scorePath(allFiles[i], mention.query.toLowerCase());
+      if (sc >= 0) scored.push({ path: allFiles[i], sc: sc });
+    }
+    scored.sort(function (a, b) { return b.sc - a.sc || a.path.length - b.path.length || (a.path < b.path ? -1 : 1); });
+    var cap = Math.min(scored.length, 60);
+    for (var k = 0; k < cap; k++) mentionItems.push({ path: scored[k].path });
+    mentionIndex = 0;
+  }
+
+  function hlMatch(name, q) {
+    var safe = esc(name);
+    if (!q) return safe;
+    var i = name.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return safe;
+    return esc(name.slice(0, i)) + "<b>" + esc(name.slice(i, i + q.length)) + "</b>" + esc(name.slice(i + q.length));
+  }
+
+  function closeMention() {
+    mention = null;
+    mentionItems = [];
+    mentionIndex = 0;
+    var pop = document.querySelector(".mention-pop");
+    if (pop) pop.remove();
+  }
+
+  function moveSel(d) {
+    if (!mentionItems.length) return;
+    mentionIndex = (mentionIndex + d + mentionItems.length) % mentionItems.length;
+    showMention();
+  }
+
+  function showMention() {
+    var comp = document.querySelector(".composer");
+    var wrap = document.querySelector(".composer-wrap");
+    if (!comp || !wrap || !mention) { closeMention(); return; }
+    // Must live on .composer-wrap, NOT inside .composer: the composer has
+    // overflow:hidden, which clips the popover anchored above it.
+    var pop = wrap.querySelector(".mention-pop");
+    if (!pop) {
+      pop = document.createElement("div");
+      pop.className = "mention-pop";
+      wrap.appendChild(pop);
+    }
+    pop.style.bottom = (Math.max(wrap.clientHeight - comp.offsetTop, 0) + 6) + "px";
+    var html = "";
+    if (!mentionItems.length) {
+      html = "<div class='mention-empty'>No matching files</div>";
+    } else {
+      for (var i = 0; i < mentionItems.length; i++) {
+        var p = mentionItems[i].path;
+        var cut = p.lastIndexOf("/") + 1;
+        var name = p.slice(cut);
+        var dir = p.slice(0, cut);
+        html +=
+          "<div class='mention-item" + (i === mentionIndex ? " sel" : "") + "' data-mi='" + i + "'>" +
+          "<span class='mi-icon'>" + fileImg(p) + "</span>" +
+          "<span class='mi-name'>" + hlMatch(name, mention.query) + "</span>" +
+          "<span class='mi-path'>" + esc(dir) + "</span>" +
+          "</div>";
+      }
+    }
+    html += "<div class='mention-foot'><span>Tab / Enter to add</span><span>&uarr;&darr; browse &middot; esc close</span></div>";
+    pop.innerHTML = html;
+    Array.prototype.forEach.call(pop.querySelectorAll(".mention-item"), function (el) {
+      el.onmousedown = function (ev) {
+        ev.preventDefault(); // keep textarea focus + caret
+        pickMention(Number(el.getAttribute("data-mi")));
+      };
+      el.onmouseenter = function () {
+        var idx = Number(el.getAttribute("data-mi"));
+        if (idx !== mentionIndex) { mentionIndex = idx; showMention(); }
+      };
+    });
+    var sel = pop.querySelector(".mention-item.sel");
+    if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: "nearest" });
+  }
+
+  function updateMention(el) {
+    var tok = caretToken(el);
+    if (!tok) { closeMention(); return; }
+    mention = tok;
+    if (!filesRequested) {
+      filesRequested = true;
+      vscode.postMessage({ type: "requestFiles" });
+    }
+    refreshMentionItems();
+    showMention();
+  }
+
+  function pickMention(i) {
+    var f = mentionItems[i];
+    if (!f) return;
+    var input = document.getElementById("input");
+    if (input && mention) {
+      var pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+      var before = input.value.slice(0, mention.start);
+      var after = input.value.slice(pos);
+      var glue = after && !/^[\\s]/.test(after) ? " " : "";
+      input.value = before + glue + after;
+      var caret = mention.start + glue.length;
+      autoSize(input);
+      input.focus();
+      try { input.setSelectionRange(caret, caret); } catch (e) { void e; }
+    }
+    var known = false;
+    for (var k = 0; k < attached.length; k++) {
+      if (attached[k].path === f.path) { known = true; break; }
+    }
+    if (!known) attached.push({ path: f.path });
+    syncCtxChips();
+    closeMention();
+  }
+
+  // ---- agent-mode popover (anchored above the mode chip) ----
+
+  function closeModeMenu() {
+    document.removeEventListener("mousedown", menuOutside, true);
+    var menu = document.querySelector(".mode-menu");
+    if (menu) menu.remove();
+  }
+
+  function menuOutside(ev) {
+    var menu = document.querySelector(".mode-menu");
+    var chip = document.getElementById("mode-chip");
+    if (menu && !menu.contains(ev.target) && ev.target !== chip && !(chip && chip.contains(ev.target))) closeModeMenu();
+  }
+
+  function openModeMenu(chip) {
+    if (menuOpen()) { closeModeMenu(); return; }
+    var wrap = document.querySelector(".composer-wrap");
+    if (!wrap) return;
+    var menu = document.createElement("div");
+    menu.className = "mode-menu";
+    var items = [
+      { id: "build", icon: IC.modeBuild, label: "Build", desc: "Edit files, run commands & verify" },
+      { id: "plan", icon: IC.modePlan, label: "Plan", desc: "Read-only research, then a step-by-step plan" }
+    ];
+    var html = "<div class='mode-menu-head'>Agent mode</div>";
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      html +=
+        "<div class='mode-item" + (state.mode === it.id ? " sel" : "") + "' data-mode='" + it.id + "'>" +
+        "<span class='mm-icon'>" + it.icon + "</span>" +
+        "<span class='mm-main'><span class='mm-label'>" + it.label + "</span><span class='mm-desc'>" + it.desc + "</span></span>" +
+        (state.mode === it.id ? "<span class='mm-check'>" + IC.check + "</span>" : "") +
+        "</div>";
+    }
+    menu.innerHTML = html;
+    wrap.appendChild(menu);
+    menu.style.bottom = (Math.max(wrap.clientHeight - chip.offsetTop, 0) + 6) + "px";
+    Array.prototype.forEach.call(menu.querySelectorAll(".mode-item"), function (el) {
+      el.onmousedown = function (ev) {
+        ev.preventDefault();
+        var m = el.getAttribute("data-mode");
+        closeModeMenu();
+        if (m !== state.mode) {
+          state.mode = m; // optimistic; state push confirms
+          syncModeChip();
+          vscode.postMessage({ type: "setMode", mode: m });
+        }
+      };
+    });
+    setTimeout(function () { document.addEventListener("mousedown", menuOutside, true); }, 0);
+  }
+
+  function menuOpen() { return document.querySelector(".mode-menu") !== null; }
+
+  function syncCtxChips() {    var comp = document.querySelector(".composer");
+    if (!comp) return;
+    var row = comp.querySelector(".ctx-chips");
+    if (!attached.length) {
+      if (row) row.remove();
+      return;
+    }
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "ctx-chips";
+      comp.insertBefore(row, comp.firstChild);
+    }
+    var html = "";
+    for (var i = 0; i < attached.length; i++) {
+      html +=
+        "<span class='ctx-chip' title='" + esc(attached[i].path) + "'>" +
+        fileImg(attached[i].path) + "<span>" + esc(attached[i].path) + "</span>" +
+        "<button class='chip-x' data-cx='" + i + "' title='Remove context'>&times;</button>" +
+        "</span>";
+    }
+    row.innerHTML = html;
+    Array.prototype.forEach.call(row.querySelectorAll("[data-cx]"), function (b) {
+      b.onclick = function () {
+        attached.splice(Number(b.getAttribute("data-cx")), 1);
+        syncCtxChips();
+      };
+    });
+  }
+
 
   // ------------------------------------------------------------------
   // DOM events -> extension
@@ -746,7 +1238,21 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     var input = q("input");
     if (input) {
       input.onkeydown = function (ev) {
+        if (mention) {
+          if (ev.key === "ArrowDown") { ev.preventDefault(); moveSel(1); return; }
+          if (ev.key === "ArrowUp") { ev.preventDefault(); moveSel(-1); return; }
+          if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); pickMention(mentionIndex); return; }
+          if (ev.key === "Escape") { ev.preventDefault(); closeMention(); return; }
+        }
         if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); submit(); }
+      };
+      input.oninput = function () {
+        autoSize(input);
+        updateMention(input);
+      };
+      input.onblur = function () {
+        // Delay so item mousedown (prevented default) still resolves first.
+        setTimeout(function () { closeMention(); }, 120);
       };
       autoSize(input);
       input.focus();
@@ -761,6 +1267,8 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     };
     var mc = q("model-chip");
     if (mc) mc.onclick = function () { editingProfileId = undefined; vscode.postMessage({ type: "openSettings" }); };
+    var modeChip = q("mode-chip");
+    if (modeChip) modeChip.onclick = function () { openModeMenu(modeChip); };
 
     document.querySelectorAll(".example[data-example]").forEach(function (b) {
       b.onclick = function () { var inp = q("input"); if (inp) { inp.value = b.getAttribute("data-example"); inp.focus(); autoSize(inp); } };
@@ -773,6 +1281,10 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
       row.onclick = function (ev) {
         if (ev.target && ev.target.closest && ev.target.closest("[data-del-chat]")) return;
         chatsView = false;
+        closeMention();
+        closeModeMenu();
+        forceFullRender = true; // transcript is about to be replaced wholesale
+        render(); // leave the list immediately; the state push repaints content
         vscode.postMessage({ type: "openChat", id: row.getAttribute("data-chat-id") });
       };
     });
@@ -822,9 +1334,14 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     var input = document.getElementById("input");
     if (!input || !input.value.trim()) return;
     var task = input.value;
+    var files = [];
+    for (var i = 0; i < attached.length; i++) files.push(attached[i].path);
     input.value = "";
+    attached = [];
+    syncCtxChips();
+    closeMention();
     followStream = true;
-    vscode.postMessage({ type: "submit", task: task });
+    vscode.postMessage({ type: "submit", task: task, files: files });
   }
 
   function autoSize(el) {
@@ -842,7 +1359,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 <head>
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:;" />
+      content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data: https://api.iconify.design;" />
 <style>
   :root { color-scheme: dark; --r-lg: 12px; --r-md: 8px; }
   * { box-sizing: border-box; }
@@ -985,12 +1502,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   .approval-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
   /* ---------- composer ---------- */
-  .composer-wrap { padding: 4px 12px 10px; flex-shrink: 0; }
+  .composer-wrap { position: relative; padding: 4px 12px 10px; flex-shrink: 0; }
   .working-row {
     display: flex; align-items: center; gap: 8px; padding: 2px 6px 8px;
     font-size: 12px; opacity: .75;
   }
   .composer {
+    position: relative;
     border: 1px solid var(--vscode-panel-border, #555); border-radius: var(--r-lg);
     background: var(--vscode-editor-background, rgba(128,128,128,.08));
     transition: border-color .12s ease; overflow: hidden;
@@ -1070,6 +1588,28 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   .chat-date { font-size: 11px; opacity: .55; margin-top: 1px; }
   .del-chat { width: 24px; height: 24px; opacity: .45; }
   .chat-row:hover .del-chat { opacity: .9; }
+  #btn-new-chat.new-chat-btn { margin: 4px 0 14px; }
+  .chat-list { padding-bottom: 8px; }
+  .run-dot {
+    display: inline-block; width: 7px; height: 7px; margin-right: 6px;
+    border-radius: 50%; background: var(--vscode-focusBorder, #4fc1ff);
+    vertical-align: middle; animation: pulse 1s ease-in-out infinite;
+  }
+
+  /* background-run pill */
+  .bg-pill {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; color: var(--vscode-descriptionForeground, inherit);
+    background: rgba(128,128,128,.12); border-radius: 999px;
+    padding: 4px 10px; margin-bottom: 8px; align-self: flex-start;
+  }
+
+  /* syntax tokens (VS Code dark+ inspired) */
+  .tok-c { color: #6a9955; font-style: italic; }
+  .tok-s { color: #ce9178; }
+  .tok-n { color: #b5cea8; }
+  .tok-k { color: #569cd6; }
+  .tok-t { color: #4ec9b0; }
   .small { font-size: 11px; }
   .muted { opacity: .6; }
   .mono { font-family: var(--vscode-editor-font-family, monospace); }
@@ -1087,6 +1627,121 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   .form-actions { margin-top: 4px; }
   .fetch-ok { font-size: 11px; color: var(--vscode-testing-iconPassed, #7c7); }
   .fetch-error { font-size: 11px; color: var(--vscode-errorForeground); white-space: pre-wrap; }
+
+  /* ---------- agent mode (chip + popover + below-bar) ---------- */
+  .pill.mode { flex-shrink: 0; }
+  .pill.mode.plan { color: var(--vscode-focusBorder, #4fc1ff); }
+  .pill.mode.plan:hover { color: var(--vscode-focusBorder, #4fc1ff); background: rgba(79,193,233,.12); }
+  .composer-below { display: flex; align-items: center; gap: 6px; padding: 5px 2px 0; }
+  .mode-menu {
+    position: absolute; left: 12px; bottom: 0;
+    min-width: 240px;
+    background: var(--vscode-editorWidget-background, #252526);
+    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,.35));
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    z-index: 40; padding: 4px;
+    animation: fadeUp .12s ease-out;
+  }
+  .mode-menu-head {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+    opacity: .55; padding: 4px 8px 5px; font-weight: 600;
+  }
+  .mode-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .mode-item:hover, .mode-item.sel:hover { background: var(--vscode-list-hoverBackground, rgba(128,128,128,.15)); }
+  .mm-icon { display: inline-flex; flex-shrink: 0; opacity: .85; }
+  .mm-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .mm-label { font-weight: 600; }
+  .mm-desc { font-size: 10.5px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mm-check { margin-left: auto; color: var(--vscode-testing-iconPassed, #6c6); display: inline-flex; flex-shrink: 0; }
+
+  /* plan -> build handoff card */
+  .plan-card { border-color: var(--vscode-testing-iconPassed, #7c7); animation: fadeUp .18s ease-out; }
+  .plan-card .approval-head { color: var(--vscode-testing-iconPassed, #7c7); }
+
+  /* ---------- real file-type logos (Iconify / vscode-icons) ---------- */
+  img.fi {
+    width: 15px; height: 15px; flex-shrink: 0;
+    object-fit: contain; vertical-align: middle;
+  }
+  .ctx-chip img.fi { width: 13px; height: 13px; }
+  .msg-file img.fi { width: 12px; height: 12px; }
+  .act-icon .act-fileicon { display: inline-flex; }
+  .act-icon img.fi { width: 14px; height: 14px; }
+
+  /* ---------- @-mention file picker (Codex-style) ---------- */
+  .mention-pop {
+    position: absolute; left: 12px; right: 12px;
+    bottom: 0; /* re-anchored in JS to sit just above the composer */
+    background: var(--vscode-editorWidget-background, #252526);
+    border: 1px solid var(--vscode-widget-border, rgba(128,128,128,.35));
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45);
+    max-height: 232px; overflow-y: auto; overscroll-behavior: contain;
+    z-index: 40; padding: 4px;
+    animation: fadeUp .12s ease-out;
+  }
+  .mention-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; line-height: 1.3;
+  }
+  .mention-item.sel { background: var(--vscode-list-activeSelectionBackground, rgba(128,128,128,.2)); color: var(--vscode-list-activeSelectionForeground, inherit); }
+  .mi-icon { display: inline-flex; flex-shrink: 0; opacity: 1; }
+  .mi-name {
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
+  }
+  .mi-name b { color: var(--vscode-focusBorder, #4fc1ff); font-weight: 600; }
+  .mi-path {
+    margin-left: auto; padding-left: 10px; opacity: .45; font-size: 10.5px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    direction: rtl; text-align: left; max-width: 55%; flex-shrink: 0;
+  }
+  .mention-empty { padding: 8px 9px; font-size: 12px; opacity: .5; }
+  .mention-foot {
+    display: flex; justify-content: space-between; gap: 8px;
+    padding: 5px 8px 3px; margin-top: 3px;
+    font-size: 10px; opacity: .45;
+    border-top: 1px solid rgba(128,128,128,.18);
+  }
+
+  /* ---------- attached context chips ---------- */
+  .ctx-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 9px 10px 0; }
+  .ctx-chip {
+    display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+    font-size: 11px; line-height: 1.3;
+    background: rgba(128,128,128,.14);
+    border: 1px solid rgba(128,128,128,.28);
+    border-radius: 999px; padding: 3px 4px 3px 8px;
+    max-width: 240px;
+  }
+  .ctx-chip > span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px;
+  }
+  .chip-x {
+    background: none; border: none; color: inherit; opacity: .5;
+    cursor: pointer; font-size: 13px; padding: 0 3px; line-height: 1; flex-shrink: 0;
+  }
+  .chip-x:hover { opacity: 1; color: var(--vscode-errorForeground, #f66); }
+
+  /* attached files shown under a sent user message */
+  .msg-files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+  .msg-file {
+    display: inline-flex; align-items: center; gap: 4px; min-width: 0;
+    font-size: 10.5px; opacity: .85;
+    background: rgba(0,0,0,.22); border: 1px solid rgba(128,128,128,.25);
+    border-radius: 999px; padding: 2px 8px;
+  }
+  .msg-file span {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
 
   /* ---------- scrollbars ---------- */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
