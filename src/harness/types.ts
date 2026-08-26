@@ -48,6 +48,8 @@ export interface HostContext {
 	askUser(question: string, options?: string[]): Promise<string | undefined>;
 	/** Stream live tool output (e.g. terminal chunks) to the UI. */
 	emitToolOutput?(text: string): void;
+	/** Structured diagnostics sink (Agent Kit output channel). */
+	log?(level: "info" | "warn" | "error", message: string): void;
 }
 
 export interface ApprovalRequest {
@@ -99,6 +101,8 @@ export interface LlmClient {
 		tools: { type: "function"; function: { name: string; description: string; parameters: ToolParameters } }[],
 		handlers: StreamHandlers,
 		signal?: AbortSignal,
+		opts?: { /** Skip SSE and wait for one JSON payload (used when streams keep dropping). */
+			nonStreaming?: boolean },
 	): Promise<LlmResponse>;
 	listModels(): Promise<string[]>;
 }
