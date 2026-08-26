@@ -40,10 +40,14 @@
         "command": "agentKit.newTask",
         "title": "Agent Kit: New Task"
       },
-      {
-        "command": "agentKit.openPanel",
-        "title": "Agent Kit: Open Panel"
-      },
+			{
+				"command": "agentKit.openPanel",
+				"title": "Agent Kit: Open Panel"
+			},
+			{
+				"command": "agentKit.showLogs",
+				"title": "Agent Kit: Show Logs"
+			},
       {
         "command": "agentKit.selectProfile",
         "title": "Agent Kit: Switch Model Profile"
@@ -117,6 +121,7 @@
   },
   "dependencies": {
     "@types/ws": "^8.18.1",
+    "undici": "^8.10.0",
     "ws": "^8.21.3"
   }
 }

@@ -5,11 +5,30 @@ import { ApprovalDecision, ChatMessage, HarnessEvent, ModelProfile, RunActionRec
 import { ModelConfigManager } from "../config/modelProfiles";
 import { OpenAiCompatClient } from "../llm/openaiCompat";
 import { getWebviewHtml } from "./webviewHtml";
+import { COMPLETION_TOOL } from "../tools/interactiveTools";
+
+/** Agent modes: "plan" is read-only research; "build" has the full tool belt. */
+export type AgentMode = "plan" | "build";
+
+/** Tools available in PLAN mode — strictly read-only + interaction/completion. */
+const PLAN_ALLOWED_TOOLS = new Set(["read_file", "list_files", "search_files", "ask_user", COMPLETION_TOOL]);
+
+/** System-side constraints injected into every plan-mode task. */
+const PLAN_TASK_PREFIX = [
+	"[AGENT MODE: PLAN]",
+	"You are operating in PLAN mode. Hard rules:",
+	"- You CANNOT create, modify or delete files, and you CANNOT run commands — those tools are unavailable in this mode.",
+	"- Research the workspace with read_file / list_files / search_files as needed.",
+	"- Produce a concrete, step-by-step implementation plan (files to create/edit with a summary of changes, commands to run, verification steps).",
+	"- Finish by calling " + COMPLETION_TOOL + " with the complete plan.",
+].join("\n");
 
 interface TranscriptEntry {
 	kind: "user" | "assistant" | "tool" | "notice";
 	text?: string;
 	reasoning?: string;
+	/** Workspace-relative paths attached as context via @-mentions. */
+	files?: string[];
 	callId?: string;
 	name?: string;
 	argsSummary?: string;
@@ -55,6 +74,12 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
 	private view?: vscode.WebviewView;
 	private readonly runner: AgentRunner;
+	/** Read-only runner used while in PLAN mode (write/exec tools removed). */
+	private planRunner?: AgentRunner;
+	/** Current agent mode — applied to newly started runs. */
+	private mode: AgentMode = "build";
+	/** Set when a plan-mode run completed: webview offers the switch to Build. */
+	private planReady = false;
 	private transcript: TranscriptEntry[] = [];
 	private busy = false;
 	private autoApproveSession: boolean;
@@ -93,12 +118,36 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 		private readonly modelConfig: ModelConfigManager,
 		private readonly tools: ToolDefinition[],
 		private readonly chatStore?: vscode.Memento,
+		private readonly logChannel?: vscode.LogOutputChannel,
 	) {
 		this.autoApproveSession = modelConfig.isAutoApprovedForSession();
 		this.runner = new AgentRunner({
-			clientFactory: () => new OpenAiCompatClient(this.requireActiveProfile()),
+			clientFactory: () => this.makeClient(),
 			tools,
 		});
+	}
+
+	private makeClient(): OpenAiCompatClient {
+		return new OpenAiCompatClient(this.requireActiveProfile(), (lvl, m) => this.writeLog(lvl, m));
+	}
+
+	/** Runner for a mode: PLAN strips write/exec tools so the model can't misuse them. */
+	private runnerFor(mode: AgentMode): AgentRunner {
+		if (mode !== "plan") return this.runner;
+		if (!this.planRunner) {
+			this.planRunner = new AgentRunner({
+				clientFactory: () => this.makeClient(),
+				tools: this.tools.filter((t) => PLAN_ALLOWED_TOOLS.has(t.name)),
+			});
+		}
+		return this.planRunner;
+	}
+
+	private writeLog(level: "info" | "warn" | "error", message: string): void {
+		if (!this.logChannel) return;
+		if (level === "error") this.logChannel.error(message);
+		else if (level === "warn") this.logChannel.warn(message);
+		else this.logChannel.info(message);
 	}
 
 	resolveWebviewView(view: vscode.WebviewView): void {
@@ -107,6 +156,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 		view.webview.html = getWebviewHtml(view.webview, this.extensionUri);
 		view.webview.onDidReceiveMessage((msg) => void this.handleWebviewMessage(msg));
 		this.restoreLastSession();
+		void this.sendWorkspaceFiles(); // preload so the @-picker opens instantly
 		this.pushFullState();
 	}
 
@@ -207,7 +257,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 	// Public API used by commands
 	// ------------------------------------------------------------------
 
-	public async submitTask(task: string): Promise<void> {
+	public async submitTask(task: string, attachedFiles?: string[]): Promise<void> {
 		if (task.trim() === "") return;
 		if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
 			const pick = await vscode.window.showErrorMessage(
@@ -244,10 +294,23 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 			: undefined;
 		const selection = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : undefined;
 
+		// @-mentioned files: read contents and append as an explicit context block
+		// for the model, while the transcript keeps only the original message.
+		const files = (attachedFiles ?? []).map((f) => String(f).replace(/\\/g, "/").replace(/^\/+/, "")).filter((f) => f && !f.includes(".."));
+		const attachmentContext = await this.buildAttachmentContext(files);
+		let effectiveTask = attachmentContext ? `${task}\n\n${attachmentContext}` : task;
+
+		// Mode is captured at submission: a running plan keeps its read-only
+		// toolset even if the user flips the switch mid-run.
+		const runMode = this.mode;
+		this.planReady = false;
+		if (runMode === "plan") effectiveTask = `${PLAN_TASK_PREFIX}\n\n${effectiveTask}`;
+		const activeRunner = this.runnerFor(runMode);
+
 		const sid = this.sessionId;
 		const sTranscript = this.transcript;
 		const sHistory = this.history;
-		sTranscript.push({ kind: "user", text: task });
+		sTranscript.push({ kind: "user", text: task, ...(files.length ? { files } : {}) });
 		this.busy = true;
 		this.abortController = new AbortController();
 		this.run = { id: sid, transcript: sTranscript, history: sHistory };
@@ -255,38 +318,50 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 		this.runPartial = "";
 		this.runActions = [];
 		const title = task.split("\n")[0].trim().slice(0, 48) || "New chat";
+		this.writeLog("info", `run started — chat=${sid} mode=${runMode} model="${profile.label}/${profile.model}" endpoint=${profile.baseUrl} history=${sHistory.length} msg(s)`);
 		this.pushFullState(title);
 
 		const run = (async () => {
 			try {
 				const settingAutoApprove = vscode.workspace.getConfiguration("agentKit").get<boolean>("autoApprove", false);
 				const bypass = this.autoApproveSession || settingAutoApprove;
-				const result = await this.runner.run(
+				const result = await activeRunner.run(
 					{
 						postEvent: (e) => this.onHarnessEvent(e),
 						requestApproval: bypass
 							? () => Promise.resolve("approved" as ApprovalDecision)
 							: (req) => this.requestApproval(req),
-						askUser: (question, options) => Promise.resolve(this.askUser(question, options)),
-						workspaceRoot: this.workspaceRoot(),
-						commandTimeoutSec: vscode.workspace.getConfiguration("agentKit").get<number>("commandTimeoutSec", 120),
-						signal: this.abortController!.signal,
-					},
-					{
-						task,
-						activeFile,
-						selection,
-						maxIterations: vscode.workspace.getConfiguration("agentKit").get<number>("maxIterations", 40),
-						history: sHistory.slice(),
-					},
+					askUser: (question, options) => Promise.resolve(this.askUser(question, options)),
+					workspaceRoot: this.workspaceRoot(),
+					commandTimeoutSec: vscode.workspace.getConfiguration("agentKit").get<number>("commandTimeoutSec", 120),
+					signal: this.abortController!.signal,
+					log: (lvl, m) => this.writeLog(lvl, m),
+				},
+				{
+					task: effectiveTask,
+					activeFile,
+					selection,
+					maxIterations: vscode.workspace.getConfiguration("agentKit").get<number>("maxIterations", 40),
+					history: sHistory.slice(),
+				},
 				);
 				if (result.status !== "completed") {
 					sTranscript.push({
 						kind: "notice",
 						text: result.status === "error" ? `Error: ${result.summary}` : result.summary,
 					});
+					if (result.status === "error" && this.logChannel) {
+						void vscode.window
+							.showErrorMessage("Agent Kit request failed.", "Open logs")
+							.then((pick) => { if (pick === "Open logs") this.logChannel!.show(); });
+					}
 				}
-				this.rememberTurnInto(sHistory, task, result);
+				this.writeLog("info", `run finished: status=${result.status}, iterations used, chat=${sid}`);
+			this.rememberTurnInto(sHistory, task, result);
+			// A finished plan offers the user the one-click switch to Build.
+			if (runMode === "plan" && result.status === "completed") {
+				this.planReady = true;
+			}
 			} finally {
 				this.busy = false;
 				this.abortController = undefined;
@@ -326,6 +401,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 	}
 
 	public cancel(): void {
+		this.writeLog("warn", "cancel requested by user — aborting current run");
 		this.abortController?.abort();
 		if (this.pendingApproval) {
 			this.pendingApproval.resolve("denied");
@@ -339,6 +415,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 		if (this.transcript.length > 0 || this.history.length > 0) this.saveSession();
 		this.startFreshSession();
 		this.settingsVisible = false;
+		this.planReady = false;
 		this.runner.resetSessionApprovals();
 		this.pushFullState();
 	}
@@ -393,8 +470,15 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 	}
 
 	private requestApproval(req: { id: string; tool: string; title: string; detail: string }): Promise<ApprovalDecision> {
+		this.writeLog("info", `approval requested: ${req.title}`);
 		return new Promise<ApprovalDecision>((resolve) => {
-			this.pendingApproval = { ...req, resolve };
+			this.pendingApproval = {
+				...req,
+				resolve: (d) => {
+					this.writeLog("info", `approval decision: ${d} (${req.tool})`);
+					resolve(d);
+				},
+			};
 			this.pushFullState();
 			void this.reveal();
 		});
@@ -413,12 +497,49 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 	// ------------------------------------------------------------------
 
 	private async handleWebviewMessage(msg: Record<string, unknown>): Promise<void> {
+		try {
+			await this.routeWebviewMessage(msg);
+		} catch (err) {
+			// A throwing handler must never silently kill webview interactions.
+			this.writeLog("error", `webview message "${String(msg.type)}" failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private async routeWebviewMessage(msg: Record<string, unknown>): Promise<void> {
 		switch (msg.type) {
 			case "ready":
 				this.pushFullState();
+				void this.sendWorkspaceFiles();
 				break;
 			case "submit":
-				await this.submitTask(String(msg.task ?? ""));
+				await this.submitTask(
+					String(msg.task ?? ""),
+					Array.isArray(msg.files) ? msg.files.map((f) => String(f)) : [],
+				);
+				break;
+			case "requestFiles":
+				await this.sendWorkspaceFiles();
+				break;
+			case "setMode": {
+				this.mode = String(msg.mode) === "plan" ? "plan" : "build";
+				this.planReady = false;
+				this.writeLog("info", `agent mode set to ${this.mode}`);
+				this.pushFullState();
+				break;
+			}
+			case "continueInBuild": {
+				// User approved the plan→build handoff: flip mode and continue
+				// automatically — history already contains the plan conversation.
+				this.planReady = false;
+				this.mode = "build";
+				this.writeLog("info", "plan approved — switching to build mode and continuing");
+				this.pushFullState();
+				void this.submitTask("Implement the plan you created in this chat. Follow it step by step, verifying as you go.", []);
+				break;
+			}
+			case "dismissPlanPrompt":
+				this.planReady = false;
+				this.pushFullState();
 				break;
 			case "cancel":
 				this.cancel();
@@ -429,13 +550,30 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 			case "openChat": {
 				const id = String(msg.id ?? "");
 				this.loadIndex();
-				if (this.sessions.find((s) => s.id === id)) {
-					if (id !== this.sessionId) {
-						// Safe during background runs: the run owns its own arrays.
-						this.loadSessionIntoMemory(id);
-						this.pushFullState();
+				let meta = this.sessions.find((s) => s.id === id);
+				if (!meta && this.chatStore) {
+					// Self-heal: index entry lost (older build / partial write) but the
+					// chat blob survived — restore it into the index instead of dying
+					// silently, which left the webview stuck on an empty chat.
+					const blob = this.chatStore.get<SessionBlob | undefined>(`agentKit.chat.${id}`);
+					if (blob && blob.id === id) {
+						meta = { id, title: blob.title || "Restored chat", createdAt: blob.createdAt || Date.now(), updatedAt: blob.updatedAt || Date.now() };
+						this.sessions.unshift(meta);
+						void this.chatStore.update(CHATS_INDEX_KEY, this.sessions);
+						this.writeLog("info", `restored orphaned chat "${meta.title}" (${id}) into index`);
 					}
 				}
+				if (!meta) {
+					this.writeLog("warn", `openChat: unknown chat id "${id}" — repainting current session`);
+					await this.reveal();
+					this.pushFullState(); // always answer so the webview is never stranded
+					break;
+				}
+				// Re-opening the active/running chat must ALSO refresh: the webview
+				// already left the list view and needs a state push to paint it.
+				if (id !== this.sessionId) this.loadSessionIntoMemory(id);
+				await this.reveal();
+				this.pushFullState();
 				break;
 			}
 			case "deleteChat": {
@@ -573,6 +711,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 					? { id: this.pendingApproval.id, tool: this.pendingApproval.tool, title: this.pendingApproval.title, detail: this.pendingApproval.detail }
 					: null,
 				activeLabel: active ? `${active.label} · ${active.model || "(no model set)"}` : "(no model)",
+				mode: this.mode,
+				planReady: this.planReady,
 				chats: this.sessions.slice(0, MAX_SESSIONS).map((s) => ({ id: s.id, title: s.title || "New chat", updatedAt: s.updatedAt })),
 				activeChatId: this.sessionId,
 			},
@@ -582,6 +722,73 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 	private workspaceRoot(): string {
 		const folder = vscode.workspace.workspaceFolders?.[0];
 		return folder ? folder.uri.fsPath : this.extensionUri.fsPath;
+	}
+
+	// ------------------------------------------------------------------
+	// @-mention support: workspace file list + attachment contents
+	// ------------------------------------------------------------------
+
+	/** Scan the workspace (heavy dirs excluded) and post the relative-path list. */
+	private async sendWorkspaceFiles(): Promise<void> {
+		let files: string[] = [];
+		const root = vscode.workspace.workspaceFolders?.[0];
+		if (root) {
+			try {
+				const uris = await vscode.workspace.findFiles(
+					"**/*",
+					"**/{node_modules,.git,dist,out,build,.next,coverage,vendor,__pycache__,.venv}/**",
+					4000,
+				);
+				files = uris
+					.map((u) => path.relative(root.uri.fsPath, u.fsPath).split(path.sep).join("/"))
+					.filter((p) => p.length > 0 && !p.startsWith(".."))
+					.sort();
+			} catch (err) {
+				this.writeLog("warn", `workspace file scan failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		void this.view?.webview.postMessage({ type: "fileList", files });
+	}
+
+	/**
+	 * Read @-mentioned files and render them as a fenced context block appended
+	 * to the task. Caps keep runaway prompts bounded; unreadable/binary files are
+	 * reported inline instead of failing the whole run.
+	 */
+	private async buildAttachmentContext(files: string[]): Promise<string> {
+		if (!files.length) return "";
+		const root = this.workspaceRoot();
+		const MAX_FILES = 10;
+		const MAX_FILE_CHARS = 40_000;
+		const MAX_TOTAL_CHARS = 120_000;
+		const parts: string[] = [];
+		let total = 0;
+		for (const rel of files.slice(0, MAX_FILES)) {
+			const uri = vscode.Uri.file(path.join(root, rel));
+			try {
+				const stat = await vscode.workspace.fs.stat(uri);
+				if ((stat.type & vscode.FileType.Directory) !== 0 || stat.size > 1_000_000) {
+					parts.push(`File "${rel}": skipped (${stat.size > 1_000_000 ? "too large" : "directory"})`);
+					continue;
+				}
+				let text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+				if (text.includes("\u0000")) {
+					parts.push(`File "${rel}": skipped (binary file)`);
+					continue;
+				}
+				if (text.length > MAX_FILE_CHARS) {
+					text = text.slice(0, MAX_FILE_CHARS) + "\n… (truncated)";
+				}
+				total += text.length;
+				parts.push(`File "${rel}":\n\`\`\`\n${text}\n\`\`\``);
+				if (total >= MAX_TOTAL_CHARS) break;
+			} catch {
+				parts.push(`File "${rel}": could not be read`);
+			}
+		}
+		return parts.length
+			? "--- Attached context (user-referenced files) ---\n" + parts.join("\n\n") + "\n--- End attached context ---"
+			: "";
 	}
 
 	private async reveal(): Promise<void> {

@@ -181,7 +181,9 @@ export function activate(context: vscode.ExtensionContext) {
 	// Agent Kit — AI coding harness (agent loop, tools, automations)
 	// =====================================================================
 	const modelConfig = new ModelConfigManager(context.globalState);
-	const agentProvider = new AgentPanelProvider(context.extensionUri, modelConfig, buildToolRegistry(), context.workspaceState);
+	const agentLog = vscode.window.createOutputChannel("Agent Kit", { log: true });
+	context.subscriptions.push(agentLog);
+	const agentProvider = new AgentPanelProvider(context.extensionUri, modelConfig, buildToolRegistry(), context.workspaceState, agentLog);
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(AgentPanelProvider.viewId, agentProvider, {
@@ -209,6 +211,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 		vscode.commands.registerCommand('agentKit.openPanel', async () => {
 			await vscode.commands.executeCommand('agentKit.sidebarView.focus');
+		}),
+		vscode.commands.registerCommand('agentKit.showLogs', () => {
+			agentLog.show(true);
 		}),
 		vscode.commands.registerCommand('agentKit.newTask', async () => {
 			const task = await vscode.window.showInputBox({
