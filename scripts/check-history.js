@@ -40,10 +40,41 @@ const { AgentRunner } = require("../out/harness/agentRunner.js");
     m2[2].role === "assistant" && String(m2[2].content).includes(r1.summary) &&
     String(m2[3].content).includes("second task");
 
-  fs.rmSync(wsRoot, { recursive: true, force: true });
   if (!ok) {
     console.error("HISTORY FAIL", JSON.stringify({ l1: m1.length, l2: m2.length }, null, 2));
     process.exit(1);
   }
   console.log("HISTORY OK: follow-up request carried previous turns (" + m2.length + " messages)");
+
+  // --- interrupted-run context (the "continue" bug) ---
+  const { summarizeRunForHistory } = require("../out/harness/types.js");
+  const mem = summarizeRunForHistory({
+    status: "aborted",
+    fallbackSummary: "Task aborted by user.",
+    texts: ["I'll create the API routes next."],
+    partial: "",
+    actions: [
+      { name: "read_file", argsSummary: "path: src/server.ts", ok: true },
+      { name: "write_file", argsSummary: "path: src/routes.ts", ok: true },
+      { name: "run_command", argsSummary: "command: npm test", ok: false },
+    ],
+  });
+  const ctxOk =
+    mem.includes("interrupted") &&
+    mem.includes("read_file") && mem.includes("src/server.ts") &&
+    mem.includes("write_file") && mem.includes("[ok]") &&
+    mem.includes("[failed]") &&
+    mem.includes("API routes");
+  const emptyMem = summarizeRunForHistory({ status: "aborted", fallbackSummary: "Task aborted by user.", texts: [], partial: "", actions: [] });
+  const completedMem = summarizeRunForHistory({
+    status: "completed", fallbackSummary: "All done.",
+    texts: ["x"], partial: "", actions: [{ name: "write_file", argsSummary: "p", ok: true }],
+  });
+
+  if (!ctxOk || !emptyMem.includes("aborted") || completedMem !== "All done.") {
+    console.error("INTERRUPT-CONTEXT FAIL\n---\n" + mem + "\n---\nempty=" + emptyMem + "\ncompleted=" + completedMem);
+    process.exit(1);
+  }
+  console.log("INTERRUPT CONTEXT OK: aborted runs keep partial output + action log");
+  fs.rmSync(wsRoot, { recursive: true, force: true });
 })().catch((e) => { console.error(e); process.exit(1); });

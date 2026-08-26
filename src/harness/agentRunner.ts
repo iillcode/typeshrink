@@ -57,10 +57,7 @@ export class AgentRunner {
 				ctx.postEvent({ type: "iteration", current: iterations, max: opts.maxIterations });
 				ctx.postEvent({ type: "status", phase: "thinking" });
 
-				const response = await client.chat(messages, openAiTools, {
-					onTextDelta: (d) => ctx.postEvent({ type: "assistant_delta", text: d }),
-					onReasoningDelta: (d) => ctx.postEvent({ type: "reasoning_delta", text: d }),
-				}, ctx.signal);
+				const response = await this.chatWithRetry(ctx, client, messages, openAiTools);
 
 				if (ctx.signal.aborted) {
 					return this.finish(ctx, iterations, "aborted", "Task aborted by user.");
@@ -127,6 +124,50 @@ export class AgentRunner {
 		// Heuristic: a bare text answer with no completion call is only accepted when it is short —
 		// otherwise the model probably forgot the completion tool and we nudge it instead.
 		return content.trim().length < 400;
+	}
+
+	/**
+	 * Stream a completion, retrying transient connection drops (undici "terminated",
+	 * ECONNRESET, socket hang up...). Long generations — e.g. models writing large
+	 * files chunk by chunk — are the most likely to be cut mid-stream.
+	 */
+	private async chatWithRetry(
+		ctx: HostContext,
+		client: LlmClient,
+		messages: ChatMessage[],
+		openAiTools: ReturnType<typeof toOpenAiTools>,
+	): Promise<import("./types").LlmResponse> {
+		const MAX_ATTEMPTS = 3;
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await client.chat(messages, openAiTools, {
+					onTextDelta: (d) => ctx.postEvent({ type: "assistant_delta", text: d }),
+					onReasoningDelta: (d) => ctx.postEvent({ type: "reasoning_delta", text: d }),
+				}, ctx.signal);
+			} catch (err) {
+				if (err instanceof AbortedError || ctx.signal.aborted) throw err;
+				if (!AgentRunner.isTransient(err) || attempt >= MAX_ATTEMPTS) throw err;
+				ctx.postEvent({ type: "stream_reset" });
+				ctx.postEvent({
+					type: "status",
+					phase: "executing",
+					detail: `connection lost — retrying (${attempt + 1}/${MAX_ATTEMPTS})`,
+				});
+				await new Promise((r) => setTimeout(r, 600 * attempt));
+				if (ctx.signal.aborted) throw err;
+			}
+		}
+	}
+
+	private static isTransient(err: unknown): boolean {
+		if (!(err instanceof Error)) return false;
+		const haystack = [
+			err.message ?? "",
+			String((err as { cause?: { code?: string; message?: string } }).cause?.code ?? ""),
+			String((err as { cause?: { code?: string; message?: string } }).cause?.message ?? ""),
+			String((err as { code?: string }).code ?? ""),
+		].join(" ").toLowerCase();
+		return /terminated|econnreset|socket hang up|epipe|fetch failed|network|premature close|other side closed/.test(haystack);
 	}
 
 	private async executeCall(

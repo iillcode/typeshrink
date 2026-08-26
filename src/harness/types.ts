@@ -116,7 +116,9 @@ export type HarnessEvent =
 	| { type: "tool_output"; callId: string; text: string }
 	| { type: "tool_result"; callId: string; ok: boolean; output: string }
 	| { type: "iteration"; current: number; max: number }
-	| { type: "usage"; iterations: number };
+	| { type: "usage"; iterations: number }
+	/** A failed streaming attempt was discarded; receivers must clear their live buffers. */
+	| { type: "stream_reset" };
 
 export function summarizeArgs(args: Record<string, unknown>, maxLen = 160): string {
 	try {
@@ -130,4 +132,53 @@ export function summarizeArgs(args: Record<string, unknown>, maxLen = 160): stri
 	} catch {
 		return "(unserializable args)";
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Chat-history memory: what a finished/interrupted run should be remembered by
+// ---------------------------------------------------------------------------
+
+export interface RunActionRecord {
+	name: string;
+	argsSummary: string;
+	ok?: boolean;
+}
+
+/**
+ * Build the assistant-side memory entry for a finished run. For interrupted
+ * runs this preserves WHAT the agent did (files touched, commands run) and any
+ * partial output, so a follow-up like "continue" resumes from real context
+ * instead of starting over.
+ */
+export function summarizeRunForHistory(opts: {
+	status: string;
+	fallbackSummary: string;
+	texts: string[];
+	partial: string;
+	actions: RunActionRecord[];
+	maxLen?: number;
+}): string {
+	if (opts.status === "completed") {
+		return opts.fallbackSummary;
+	}
+	const parts: string[] = [];
+	if (opts.texts.length > 0) {
+		const last = opts.texts[opts.texts.length - 1].trim();
+		if (last) parts.push(last);
+	} else if (opts.partial.trim()) {
+		parts.push("(partial response before interruption:) " + opts.partial.trim());
+	}
+	if (opts.actions.length > 0) {
+		const lines = opts.actions.slice(-30).map((a) => {
+			const mark = a.ok === undefined ? "" : a.ok ? " [ok]" : a.ok === false ? " [failed]" : "";
+			return `- ${a.name}${a.argsSummary ? `(${a.argsSummary})` : ""}${mark}`;
+		});
+		parts.push("Work done in that request:\n" + lines.join("\n"));
+	}
+	if (parts.length === 0) return `(The previous request ended without completion: ${opts.status}. ${opts.fallbackSummary})`;
+
+	let body = parts.join("\n");
+	const cap = opts.maxLen ?? 6000;
+	if (body.length > cap) body = body.slice(0, cap) + "\n... (truncated)";
+	return `(The previous request "${opts.status === "aborted" ? "was interrupted" : `ended (${opts.status})`}." Context of that attempt follows — continue from here rather than redoing work.)\n${body}`;
 }

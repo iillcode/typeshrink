@@ -181,7 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Agent Kit — AI coding harness (agent loop, tools, automations)
 	// =====================================================================
 	const modelConfig = new ModelConfigManager(context.globalState);
-	const agentProvider = new AgentPanelProvider(context.extensionUri, modelConfig, buildToolRegistry());
+	const agentProvider = new AgentPanelProvider(context.extensionUri, modelConfig, buildToolRegistry(), context.workspaceState);
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(AgentPanelProvider.viewId, agentProvider, {

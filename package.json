@@ -108,7 +108,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node test-smoke.js && node scripts/smoke-agentkit.js && node scripts/check-agentkit-webview.js && node scripts/check-abort-midstream.js && node scripts/check-paths.js && node scripts/check-cmd-quoting.js && node scripts/check-history.js"
+    "test": "node test-smoke.js && node scripts/smoke-agentkit.js && node scripts/check-agentkit-webview.js && node scripts/check-abort-midstream.js && node scripts/check-paths.js && node scripts/check-cmd-quoting.js && node scripts/check-history.js && node scripts/check-retry.js"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

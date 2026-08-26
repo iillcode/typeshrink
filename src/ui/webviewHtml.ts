@@ -11,8 +11,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 	const script = `
 (function () {
   var vscode = acquireVsCodeApi();
-  var state = { profiles: [], activeProfileId: "", autoApprove: false, busy: false, settingsVisible: false, transcript: [], pendingApproval: null, activeLabel: "" };
+  var state = { profiles: [], activeProfileId: "", autoApprove: false, busy: false, settingsVisible: false, transcript: [], pendingApproval: null, activeLabel: "", chats: [], activeChatId: "", bgBusy: false, runningChatId: "" };
   var DEFAULT_BASE_URL = "https://opencode.ai/zen/v1";
+  var chatsView = false;
   var editingProfileId = undefined; // undefined = list view, null = new, string = edit
   var draftModels = [];
   var lastModelsError = "";
@@ -47,7 +48,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     list: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M2.5 4h11M2.5 8h11M2.5 12h7' stroke='currentColor' stroke-width='1.3' stroke-linecap='round'/></svg>",
     term: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><rect x='1.5' y='2.5' width='13' height='11' rx='1.5' stroke='currentColor' stroke-width='1.2'/><path d='m4 6 2.5 2L4 10M8 10.5h4' stroke='currentColor' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/></svg>",
     chat: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M14 8A6 6 0 1 1 8 2a6 6 0 0 1 6 6Z' stroke='currentColor' stroke-width='1.2'/><path d='m4.5 13.5-.9 1.8 2.6-.9' stroke='currentColor' stroke-width='1.2' stroke-linejoin='round'/></svg>",
-    check: "<svg width='11' height='11' viewBox='0 0 16 16' fill='none'><path d='m3 8.5 3 3L13 5' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg>"
+    check: "<svg width='11' height='11' viewBox='0 0 16 16' fill='none'><path d='m3 8.5 3 3L13 5' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg>",
+    clock: "<svg width='14' height='14' viewBox='0 0 16 16' fill='none'><circle cx='8' cy='8' r='6.2' stroke='currentColor' stroke-width='1.3'/><path d='M8 4.6V8l2.4 1.6' stroke='currentColor' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/></svg>",
+    trash: "<svg width='12' height='12' viewBox='0 0 16 16' fill='none'><path d='M2.5 4.5h11M6.5 2.5h3M4 4.5l.7 9h6.6l.7-9M6.7 7v4.5M9.3 7v4.5' stroke='currentColor' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/></svg>"
   };
 
   function esc(s) {
@@ -87,12 +90,15 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     parts.push("<div class='header'>");
     parts.push("<div class='brand'><span class='brand-glyph'>&gt;_</span><span>Agent Kit</span></div>");
     parts.push("<div class='header-actions'>");
-    parts.push("<button id='btn-new' class='icon-btn' title='New task'>" + IC.plus + "</button>");
+    parts.push("<button id='btn-new' class='icon-btn' title='New chat'>" + IC.plus + "</button>");
+    parts.push("<button id='btn-chats' class='icon-btn" + (chatsView ? " active" : "") + "' title='Chat history'>" + IC.clock + "</button>");
     parts.push("<button id='btn-settings' class='icon-btn' title='Model settings'>" + IC.sliders + "</button>");
     parts.push("</div></div>");
 
     if (state.settingsVisible || editingProfileId !== undefined) {
       parts.push(renderSettings());
+    } else if (chatsView) {
+      parts.push(renderChats());
     } else {
       parts.push(renderChat());
     }
@@ -101,17 +107,64 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     wire();
     currentView = desiredView();
     renderedCount = state.transcript.length;
-    if (!state.settingsVisible && editingProfileId === undefined) syncApproval();
+    if (!state.settingsVisible && editingProfileId === undefined && !chatsView) syncApproval();
     // Re-attach any in-flight streamed response after a re-render (e.g. returning
     // from settings or a state push mid-run) so nothing visually vanishes.
-    if (streamActive && streamBuf && !state.settingsVisible && editingProfileId === undefined) {
+    if (streamActive && streamBuf && !state.settingsVisible && editingProfileId === undefined && !chatsView) {
       ensureStreamEl();
       paintStream();
     }
   }
 
   function desiredView() {
-    return (state.settingsVisible || editingProfileId !== undefined) ? "settings" : "chat";
+    if (state.settingsVisible || editingProfileId !== undefined) return "settings";
+    if (chatsView) return "chats";
+    return "chat";
+  }
+
+  // ------------------------------------------------------------------
+  // Chat history view
+  // ------------------------------------------------------------------
+
+  function renderChats() {
+    var parts = [];
+    parts.push("<div class='settings'>");
+    parts.push("<div class='settings-head'>");
+    parts.push("<button id='btn-back' class='icon-btn back-btn' title='Back to chat'>&larr;</button>");
+    parts.push("<span class='settings-title'>Chats</span>");
+    parts.push("<span style='width:26px'></span>");
+    parts.push("</div>");
+    parts.push("<button id='btn-new-chat' class='btn primary wide'>" + IC.plus.replace("width='14' height='14'", "width='12' height='12'") + " New chat</button>");
+    var list = Array.isArray(state.chats) ? state.chats : [];
+    if (list.length === 0) {
+      parts.push("<div class='hint' style='text-align:center;margin-top:24px'>No chats yet. Send your first request.</div>");
+    }
+    list.forEach(function (c) {
+      var isActive = c.id === state.activeChatId;
+      parts.push(
+        "<div class='chat-row" + (isActive ? " active" : "") + "' data-chat-id='" + esc(c.id) + "'>" +
+        "<div class='chat-main'>" +
+        "<div class='chat-title'>" + esc(c.title || "New chat") + "</div>" +
+        "<div class='chat-date muted small'>" + fmtDate(c.updatedAt) + "</div>" +
+        "</div>" +
+        "<button class='icon-btn del-chat' data-del-chat='" + esc(c.id) + "' title='Delete chat'>" + IC.trash + "</button>" +
+        "</div>"
+      );
+    });
+    parts.push("</div>");
+    return parts.join("");
+  }
+
+  function fmtDate(ts) {
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) return "";
+    var now = new Date();
+    var sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return "Today " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    }
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return d.getDate() + " " + months[d.getMonth()] + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   }
 
   function chatVisible() {
@@ -172,17 +225,21 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     if (!foot) return;
     var send = document.getElementById("btn-send");
     var stop = document.getElementById("btn-stop");
-    if (state.busy && send) {
-      send.outerHTML = "<button id='btn-stop' class='send-btn stop' title='Stop'>" + IC.stop + "</button>";
-      if (document.getElementById("btn-stop")) document.getElementById("btn-stop").onclick = function () { vscode.postMessage({ type: "cancel" }); };
-      var ta = document.getElementById("input");
-      if (ta) { ta.disabled = true; ta.placeholder = "Agent is working..."; }
+    // Send stays available while busy: sending interrupts the running task.
+    if (state.busy && !stop && send) {
+      stop = document.createElement("button");
+      stop.id = "btn-stop";
+      stop.className = "send-btn stop";
+      stop.title = "Stop";
+      stop.innerHTML = IC.stop;
+      stop.onclick = function () { vscode.postMessage({ type: "cancel" }); };
+      foot.insertBefore(stop, send);
     } else if (!state.busy && stop) {
-      stop.outerHTML = "<button id='btn-send' class='send-btn' title='Send (Enter)'>" + IC.up + "</button>";
-      if (document.getElementById("btn-send")) document.getElementById("btn-send").onclick = submit;
-      var ta2 = document.getElementById("input");
-      if (ta2) { ta2.disabled = false; ta2.placeholder = "Describe a task..."; }
+      stop.remove();
     }
+    if (send) send.title = state.busy ? "Interrupt & send (Enter)" : "Send (Enter)";
+    var ta = document.getElementById("input");
+    if (ta) ta.placeholder = state.busy ? "Send to interrupt & start a new task..." : "Describe a task...";
   }
 
   function syncApproval() {
@@ -286,17 +343,16 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     }
     parts.push("<div class='composer'>");
     parts.push("<textarea id='input' rows='1' placeholder='" +
-      (state.busy ? "Agent is working..." : "Describe a task...") + "'" +
-      (state.busy ? " disabled" : "") + "></textarea>");
+      (state.busy ? "Send to interrupt &amp; start a new task..." : "Describe a task...") +
+      "'></textarea>");
     parts.push("<div class='composer-foot'>");
     parts.push("<button id='aa-toggle' class='pill" + (state.autoApprove ? " on" : "") + "' title='Auto-approve writes &amp; commands (this session)'>" +
       IC.bolt + "<span>Auto" + (state.autoApprove ? " on" : "") + "</span></button>");
     parts.push("<button id='model-chip' class='pill model' title='Switch model profile'>" + IC.chip + "<span>" + esc(state.activeLabel || "(no model)") + "</span></button>");
     if (state.busy) {
       parts.push("<button id='btn-stop' class='send-btn stop' title='Stop'>" + IC.stop + "</button>");
-    } else {
-      parts.push("<button id='btn-send' class='send-btn' title='Send (Enter)'>" + IC.up + "</button>");
     }
+    parts.push("<button id='btn-send' class='send-btn' title='" + (state.busy ? "Interrupt & send (Enter)" : "Send (Enter)") + "'>" + IC.up + "</button>");
     parts.push("</div></div>");
     return parts.join("");
   }
@@ -547,6 +603,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
   window.addEventListener("message", function (e) {
     var msg = e.data;
+    // Harness events are tagged with their chat — ignore ones from a chat
+    // running in the background while another chat is being viewed.
+    if (msg.sessionId && state.activeChatId && msg.sessionId !== state.activeChatId) return;
     switch (msg.type) {
       case "state": {
         var wasBusy = state.busy;
@@ -579,6 +638,12 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         break;
       case "reasoning_delta":
         appendReasoning(msg.text);
+        break;
+      case "stream_reset":
+        // Retry loop discarded a failed attempt — drop its live buffers.
+        if (streamEl) { streamEl.remove(); streamEl = null; }
+        streamBuf = "";
+        reasoningBuf = "";
         break;
       case "assistant_message": {
         // Commit locally so the finished message shows immediately, even before
@@ -652,11 +717,29 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     var q = function (id) { return document.getElementById(id); };
 
     if (q("btn-settings")) q("btn-settings").onclick = function () {
+      chatsView = false;
       editingProfileId = undefined;
       vscode.postMessage({ type: state.settingsVisible ? "closeSettings" : "openSettings" });
     };
-    if (q("btn-new")) q("btn-new").onclick = function () { vscode.postMessage({ type: "newTask" }); };
-    if (q("btn-back")) q("btn-back").onclick = function () { editingProfileId = undefined; vscode.postMessage({ type: "closeSettings" }); };
+    if (q("btn-chats")) q("btn-chats").onclick = function () {
+      chatsView = !chatsView;
+      render();
+    };
+    if (q("btn-new")) q("btn-new").onclick = function () {
+      chatsView = false;
+      vscode.postMessage({ type: "newTask" });
+    };
+    if (q("btn-new-chat")) q("btn-new-chat").onclick = function () {
+      chatsView = false;
+      vscode.postMessage({ type: "newTask" });
+    };
+    if (q("btn-back")) q("btn-back").onclick = function () {
+      var wasSettings = state.settingsVisible;
+      chatsView = false;
+      editingProfileId = undefined;
+      if (wasSettings) vscode.postMessage({ type: "closeSettings" });
+      else render();
+    };
     if (q("btn-send")) q("btn-send").onclick = submit;
     if (q("btn-stop")) q("btn-stop").onclick = function () { vscode.postMessage({ type: "cancel" }); };
 
@@ -685,6 +768,20 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
     if (q("btn-add-profile")) q("btn-add-profile").onclick = function () { draftModels = []; lastModelsError = ""; editingProfileId = null; render(); };
     if (q("btn-cancel-profile")) q("btn-cancel-profile").onclick = function () { editingProfileId = undefined; render(); };
+
+    document.querySelectorAll(".chat-row[data-chat-id]").forEach(function (row) {
+      row.onclick = function (ev) {
+        if (ev.target && ev.target.closest && ev.target.closest("[data-del-chat]")) return;
+        chatsView = false;
+        vscode.postMessage({ type: "openChat", id: row.getAttribute("data-chat-id") });
+      };
+    });
+    document.querySelectorAll("[data-del-chat]").forEach(function (b) {
+      b.onclick = function (ev) {
+        ev.stopPropagation();
+        vscode.postMessage({ type: "deleteChat", id: b.getAttribute("data-del-chat") });
+      };
+    });
 
     document.querySelectorAll("[data-use]").forEach(function (b) {
       b.onclick = function () { vscode.postMessage({ type: "setActiveProfile", id: b.getAttribute("data-use") }); };
@@ -960,6 +1057,19 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     border-radius: 999px; padding: 1px 7px; vertical-align: middle; margin-left: 4px;
   }
   .profile-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .icon-btn.active { background: var(--vscode-toolbar-hoverBackground); opacity: 1; }
+  .chat-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    border-radius: var(--r-md); padding: 8px 10px; margin-bottom: 4px;
+    cursor: pointer; transition: background .12s;
+  }
+  .chat-row:hover { background: rgba(128,128,128,.12); }
+  .chat-row.active { background: rgba(128,128,128,.10); border-left: 2px solid var(--vscode-focusBorder); padding-left: 8px; }
+  .chat-main { min-width: 0; flex: 1; }
+  .chat-title { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-date { font-size: 11px; opacity: .55; margin-top: 1px; }
+  .del-chat { width: 24px; height: 24px; opacity: .45; }
+  .chat-row:hover .del-chat { opacity: .9; }
   .small { font-size: 11px; }
   .muted { opacity: .6; }
   .mono { font-family: var(--vscode-editor-font-family, monospace); }

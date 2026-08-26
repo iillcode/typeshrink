@@ -216,7 +216,7 @@ function activate(context) {
     // Agent Kit — AI coding harness (agent loop, tools, automations)
     // =====================================================================
     const modelConfig = new modelProfiles_1.ModelConfigManager(context.globalState);
-    const agentProvider = new agentPanelProvider_1.AgentPanelProvider(context.extensionUri, modelConfig, (0, registry_1.buildToolRegistry)());
+    const agentProvider = new agentPanelProvider_1.AgentPanelProvider(context.extensionUri, modelConfig, (0, registry_1.buildToolRegistry)(), context.workspaceState);
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(agentPanelProvider_1.AgentPanelProvider.viewId, agentProvider, {
         webviewOptions: { retainContextWhenHidden: true }
     }), 
