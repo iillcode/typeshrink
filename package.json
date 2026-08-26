@@ -1,7 +1,7 @@
 {
   "name": "element-click-browser",
-  "displayName": "Element Browser",
-  "description": "A webview-based browser for previewing your app inside VS Code — with login sessions that survive reloads",
+  "displayName": "Element Browser + Agent Kit",
+  "description": "Preview your app in a VS Code browser panel with persistent login sessions — plus an agentic AI coding harness that creates files/folders, edits code and runs automations via any OpenAI-compatible endpoint.",
   "version": "0.0.1",
   "publisher": "local-dev",
   "engines": {
@@ -11,9 +11,15 @@
     "Other"
   ],
   "activationEvents": [
+    "onView:elementClickBrowser.sidebarView",
+    "onView:agentKit.sidebarView",
     "onCommand:elementClickBrowser.open",
     "onCommand:elementClickBrowser.stop",
-    "onCommand:elementClickBrowser.clearSession"
+    "onCommand:elementClickBrowser.clearSession",
+    "onCommand:agentKit.newTask",
+    "onCommand:agentKit.openPanel",
+    "onCommand:agentKit.selectProfile",
+    "onCommand:agentKit.initWorkspaceConfig"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -29,6 +35,22 @@
       {
         "command": "elementClickBrowser.clearSession",
         "title": "Element Browser: Clear Saved Login Session"
+      },
+      {
+        "command": "agentKit.newTask",
+        "title": "Agent Kit: New Task"
+      },
+      {
+        "command": "agentKit.openPanel",
+        "title": "Agent Kit: Open Panel"
+      },
+      {
+        "command": "agentKit.selectProfile",
+        "title": "Agent Kit: Switch Model Profile"
+      },
+      {
+        "command": "agentKit.initWorkspaceConfig",
+        "title": "Agent Kit: Initialize Workspace Config (.agentkit)"
       }
     ],
     "viewsContainers": {
@@ -37,6 +59,11 @@
           "id": "elementClickBrowserContainer",
           "title": "Element Browser",
           "icon": "$(browser)"
+        },
+        {
+          "id": "agentKitContainer",
+          "title": "Agent Kit",
+          "icon": "$(hubot)"
         }
       ]
     },
@@ -47,13 +74,41 @@
           "id": "elementClickBrowser.sidebarView",
           "name": "Design"
         }
+      ],
+      "agentKitContainer": [
+        {
+          "type": "webview",
+          "id": "agentKit.sidebarView",
+          "name": "Agent"
+        }
       ]
+    },
+    "configuration": {
+      "title": "Agent Kit",
+      "properties": {
+        "agentKit.maxIterations": {
+          "type": "number",
+          "default": 40,
+          "description": "Maximum agent loop iterations per task."
+        },
+        "agentKit.commandTimeoutSec": {
+          "type": "number",
+          "default": 120,
+          "description": "Timeout in seconds for run_command / automations."
+        },
+        "agentKit.autoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-approve file writes, edits and command execution (dangerous)."
+        }
+      }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "test": "node test-smoke.js && node scripts/smoke-agentkit.js && node scripts/check-agentkit-webview.js && node scripts/check-abort-midstream.js && node scripts/check-paths.js && node scripts/check-cmd-quoting.js && node scripts/check-history.js"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",

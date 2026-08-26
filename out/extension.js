@@ -36,10 +36,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs/promises"));
 const injectingProxy_1 = require("./proxy/injectingProxy");
 const session_1 = require("./session");
 const panelHtml_1 = require("./webview/panelHtml");
 const providers_1 = require("./sidebar/providers");
+const modelProfiles_1 = require("./config/modelProfiles");
+const registry_1 = require("./tools/registry");
+const execTools_1 = require("./tools/execTools");
+const agentPanelProvider_1 = require("./ui/agentPanelProvider");
 function activate(context) {
     const outputChannel = vscode.window.createOutputChannel('Element Browser');
     const sessions = new session_1.SessionStore(context.globalStorageUri.fsPath, (m) => outputChannel.appendLine(m));
@@ -205,6 +211,75 @@ function activate(context) {
         catch {
             vscode.window.showErrorMessage('Invalid URL.');
         }
+    }));
+    // =====================================================================
+    // Agent Kit — AI coding harness (agent loop, tools, automations)
+    // =====================================================================
+    const modelConfig = new modelProfiles_1.ModelConfigManager(context.globalState);
+    const agentProvider = new agentPanelProvider_1.AgentPanelProvider(context.extensionUri, modelConfig, (0, registry_1.buildToolRegistry)());
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider(agentPanelProvider_1.AgentPanelProvider.viewId, agentProvider, {
+        webviewOptions: { retainContextWhenHidden: true }
+    }), 
+    // Status bar: active model profile; click focuses the Agent panel.
+    (() => {
+        const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
+        statusItem.command = 'agentKit.openPanel';
+        const refreshStatus = () => {
+            const active = modelConfig.getActive();
+            statusItem.text = `$(hubot) ${active ? active.label : 'no model'}`;
+            statusItem.tooltip = new vscode.MarkdownString(active
+                ? `**Agent Kit** — ${active.label}\n\n${active.baseUrl}\n\nmodel: \`${active.model || '(not set)'}\`\n\nClick to open the Agent panel.`
+                : '**Agent Kit** — no model configured. Click to set one up.');
+            statusItem.show();
+        };
+        agentProvider.onModelChanged = refreshStatus;
+        refreshStatus();
+        return statusItem;
+    })(), vscode.commands.registerCommand('agentKit.openPanel', async () => {
+        await vscode.commands.executeCommand('agentKit.sidebarView.focus');
+    }), vscode.commands.registerCommand('agentKit.newTask', async () => {
+        const task = await vscode.window.showInputBox({
+            prompt: 'Agent Kit: describe the task for the agent',
+            placeHolder: 'e.g. Scaffold an Express API in src/ with tests'
+        });
+        await vscode.commands.executeCommand('agentKit.sidebarView.focus');
+        if (task && task.trim() !== '') {
+            await agentProvider.submitTask(task);
+        }
+    }), vscode.commands.registerCommand('agentKit.selectProfile', async () => {
+        const profiles = modelConfig.listProfiles();
+        const active = modelConfig.getActive();
+        const pick = await vscode.window.showQuickPick(profiles.map((p) => ({
+            label: p.id === active?.id ? `$(check) ${p.label}` : p.label,
+            description: `${p.baseUrl} · ${p.model || '(no model)'}`,
+            id: p.id
+        })), { placeHolder: 'Switch the active model profile' });
+        if (pick) {
+            await modelConfig.setActive(pick.id);
+            agentProvider.refreshStatusBar();
+            void vscode.window.showInformationMessage(`Agent Kit: active model is now "${profiles.find((p) => p.id === pick.id)?.label}".`);
+        }
+    }), vscode.commands.registerCommand('agentKit.initWorkspaceConfig', async () => {
+        const root = vscode.workspace.workspaceFolders?.[0];
+        if (!root) {
+            void vscode.window.showErrorMessage('Agent Kit: open a workspace folder first.');
+            return;
+        }
+        const dir = path.join(root.uri.fsPath, '.agentkit');
+        const file = path.join(dir, 'automations.json');
+        try {
+            await fs.access(file);
+            void vscode.window.showInformationMessage('Agent Kit: .agentkit/automations.json already exists.');
+            return;
+        }
+        catch {
+            // not present yet — create it below
+        }
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(file, (0, execTools_1.sampleAutomationsJson)(), 'utf8');
+        const doc = await vscode.workspace.openTextDocument(file);
+        await vscode.window.showTextDocument(doc);
+        void vscode.window.showInformationMessage('Agent Kit: created .agentkit/automations.json with example automations.');
     }));
 }
 function deactivate() { }

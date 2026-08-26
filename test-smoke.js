@@ -19,24 +19,41 @@ require.cache['mock-vscode'] = {
       createWebviewPanel: () => ({
         webview: { onDidReceiveMessage() {}, postMessage() {}, set html(v) { calls.push(['html', v.length]); }, get html() { return ''; } },
         dispose() {},
+        onDidDispose() {},
+        title: '',
       }),
-      createOutputChannel: () => ({ appendLine() {}, show() {} }),
+      createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
       registerTreeDataProvider() {},
-      registerWebviewViewProvider() {},
+      registerWebviewViewProvider(id) { calls.push(['viewProvider', id]); },
+      createStatusBarItem: () => ({
+        text: '', tooltip: undefined, command: undefined,
+        show() { calls.push(['statusbar.show']); },
+        dispose() {},
+      }),
       showInformationMessage() {},
+      showErrorMessage() {},
+      showInputBox() {},
+      showQuickPick() {},
+      openTextDocument: async () => ({}),
+      showTextDocument: async () => {},
       withProgress() {},
     },
     commands: {
       registerCommand: (name, fn) => { calls.push(['command', name]); return { name, fn }; },
-      executeCommand() {},
+      executeCommand(name) { calls.push(['executed', name]); },
     },
-    workspace: { workspaceFolders: [{ uri: { fsPath: '.' } }] },
+    workspace: {
+      workspaceFolders: [{ uri: { fsPath: '.' } }],
+      getConfiguration: () => ({ get: (_k, d) => d }),
+      getWorkspaceFolder: () => undefined,
+    },
     env: { clipboard: { writeText() {} }, openExternal() {} },
-    Uri: { parse: (s) => ({ fsPath: s }) },
+    Uri: { parse: (s) => ({ fsPath: s }), joinPath: (base, ...p) => ({ fsPath: [base.fsPath, ...p].join('/') }) },
     TreeItem: class {},
     TreeDataProvider: class {},
     ThemeIcon: class { constructor(icon) { this.icon = icon; } },
     MarkdownString: class { appendMarkdown() {} },
+    StatusBarAlignment: { Left: 1, Right: 2 },
     WebviewViewProvider: class {},
     EventEmitter: class { fire() {} event = {}; },
     ViewColumn: { One: 1 },
@@ -55,6 +72,8 @@ const path = require('path');
 m.activate({
   subscriptions: disposables,
   globalStorageUri: { fsPath: path.join(os.tmpdir(), 'ecb-smoke-' + Date.now()) },
+  globalState: { get: (_k, d) => d, update: async () => {} },
+  extensionUri: { fsPath: process.cwd() },
   workspaceState: { get: (k, d) => d, update: () => Promise.resolve() },
 });
 console.log('activate ran OK.');
@@ -64,9 +83,16 @@ const expected = [
   'elementClickBrowser.open',
   'elementClickBrowser.stop',
   'elementClickBrowser.clearSession',
+  'agentKit.newTask',
+  'agentKit.openPanel',
+  'agentKit.selectProfile',
+  'agentKit.initWorkspaceConfig',
 ];
 const registeredCmds = calls.filter(c => c[0] === 'command').map(c => c[1]);
 for (const cmd of expected) {
   if (!registeredCmds.includes(cmd)) throw new Error('MISSING command: ' + cmd);
 }
-console.log('All', expected.length, 'commands registered ✔');
+const views = calls.filter(c => c[0] === 'viewProvider').map(c => c[1]);
+if (!views.includes('elementClickBrowser.sidebarView')) throw new Error('MISSING browser sidebar view');
+if (!views.includes('agentKit.sidebarView')) throw new Error('MISSING Agent Kit sidebar view');
+console.log('All', expected.length, 'commands +', views.length, 'views registered ✔');
