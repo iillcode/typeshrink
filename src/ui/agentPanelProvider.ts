@@ -27,6 +27,11 @@ interface TranscriptEntry {
 	kind: "user" | "assistant" | "tool" | "notice";
 	text?: string;
 	reasoning?: string;
+	/**
+	 * Ordered reasoning/text blocks as streamed (Cline's AgentMessagePart
+	 * sequence) — rendered in order so interleaved thinking keeps its position.
+	 */
+	blocks?: import("../harness/types").AssistantBlock[];
 	/** Workspace-relative paths attached as context via @-mentions. */
 	files?: string[];
 	callId?: string;
@@ -435,7 +440,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 		const t = this.run ? this.run.transcript : this.transcript;
 		switch (e.type) {
 			case "assistant_message":
-				t.push({ kind: "assistant", text: e.text, reasoning: e.reasoning });
+				t.push({ kind: "assistant", text: e.text, reasoning: e.reasoning, blocks: e.blocks });
 				this.runTexts.push(e.text);
 				this.runPartial = "";
 				break;

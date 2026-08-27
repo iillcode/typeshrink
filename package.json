@@ -40,14 +40,14 @@
         "command": "agentKit.newTask",
         "title": "Agent Kit: New Task"
       },
-			{
-				"command": "agentKit.openPanel",
-				"title": "Agent Kit: Open Panel"
-			},
-			{
-				"command": "agentKit.showLogs",
-				"title": "Agent Kit: Show Logs"
-			},
+      {
+        "command": "agentKit.openPanel",
+        "title": "Agent Kit: Open Panel"
+      },
+      {
+        "command": "agentKit.showLogs",
+        "title": "Agent Kit: Show Logs"
+      },
       {
         "command": "agentKit.selectProfile",
         "title": "Agent Kit: Switch Model Profile"
@@ -109,18 +109,22 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run build",
     "compile": "tsc -p ./",
+    "build": "tsc -p ./ && node scripts/build.mjs",
     "watch": "tsc -watch -p ./",
     "test": "node test-smoke.js && node scripts/smoke-agentkit.js && node scripts/check-agentkit-webview.js && node scripts/check-abort-midstream.js && node scripts/check-paths.js && node scripts/check-cmd-quoting.js && node scripts/check-history.js && node scripts/check-retry.js"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.39",
     "@types/ws": "^8.18.1",
+    "ai": "^7.0.83",
     "undici": "^8.10.0",
     "ws": "^8.21.3"
   }

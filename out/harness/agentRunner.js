@@ -46,7 +46,23 @@ class AgentRunner {
                     return this.finish(ctx, iterations, "aborted", "Task aborted by user.");
                 }
                 if (response.toolCalls.length === 0) {
-                    messages.push({ role: "assistant", content: response.content || "(empty response)" });
+                    // A turn with no tool calls is a plain text answer. Commit it as a
+                    // real assistant message so the streamed text is kept (and not
+                    // discarded/relabelled "(interrupted)" by the UI's fallback path).
+                    // Reasoning, if any, rides along with it.
+                    if (response.content.trim() !== "" || response.reasoning) {
+                        ctx.postEvent({
+                            type: "assistant_message",
+                            text: response.content,
+                            reasoning: response.reasoning,
+                            blocks: response.blocks,
+                        });
+                    }
+                    messages.push({
+                        role: "assistant",
+                        content: response.content || "(empty response)",
+                        ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+                    });
                     if (response.finishReason === "stop" && response.content.trim() !== "" && this.looksLikeFinalAnswer(response.content)) {
                         return this.finish(ctx, iterations, "completed", response.content);
                     }
@@ -64,12 +80,14 @@ class AgentRunner {
                         type: "assistant_message",
                         text: response.content,
                         reasoning: response.reasoning,
+                        blocks: response.blocks,
                     });
                 }
                 messages.push({
                     role: "assistant",
                     content: response.content || null,
                     tool_calls: response.toolCalls,
+                    ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
                 });
                 for (const call of response.toolCalls) {
                     if (ctx.signal.aborted) {

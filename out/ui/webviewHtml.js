@@ -17,10 +17,13 @@ function getWebviewHtml(webview, extensionUri) {
   var editingProfileId = undefined; // undefined = list view, null = new, string = edit
   var draftModels = [];
   var lastModelsError = "";
-  var streamBuf = "";
   var streamEl = null;
   var streamActive = false;
-  var reasoningBuf = "";
+  // Cline's sequence mapping (agent-runtime.ts): streamed reasoning/text deltas
+  // append to the LAST block of the same type, so the order the model produced
+  // (reasoning → text → reasoning) is preserved instead of being flattened into
+  // one reasoning blob above one text blob.
+  var streamBlocks = [];
   var reasoningCollapsedOnce = false;
   var stepsDone = 0;
   var actionText = "";
@@ -240,7 +243,7 @@ function getWebviewHtml(webview, extensionUri) {
     if (!state.settingsVisible && editingProfileId === undefined && !chatsView) syncApproval();
     // Re-attach any in-flight streamed response after a re-render (e.g. returning
     // from settings or a state push mid-run) so nothing visually vanishes.
-    if (streamActive && streamBuf && !state.settingsVisible && editingProfileId === undefined && !chatsView) {
+    if (streamActive && streamBlocks.length && !state.settingsVisible && editingProfileId === undefined && !chatsView) {
       ensureStreamEl();
       paintStream();
     }
@@ -321,9 +324,24 @@ function getWebviewHtml(webview, extensionUri) {
       return html + "</div>";
     }
     if (entry.kind === "assistant") {
-      var html = "<div class='turn-assistant'><div class='md'>" + mdRender(entry.text) + "</div>";
-      if (entry.reasoning) {
-        html += "<details class='reasoning'><summary>Reasoning</summary><div class='pre'>" + richText(entry.reasoning) + "</div></details>";
+      var html = "<div class='turn-assistant'>";
+      if (entry.blocks && entry.blocks.length) {
+        // Ordered blocks (Cline's AgentMessagePart sequence): reasoning and text
+        // render exactly in the order the model streamed them.
+        for (var bi = 0; bi < entry.blocks.length; bi++) {
+          var blk = entry.blocks[bi];
+          if (blk.type === "reasoning") {
+            html += "<details class='reasoning'><summary>Reasoning</summary><div class='pre'>" + richText(blk.text) + "</div></details>";
+          } else {
+            html += "<div class='md'>" + mdRender(blk.text) + "</div>";
+          }
+        }
+      } else {
+        // Legacy flat entries (restored sessions / completion summaries).
+        html += "<div class='md'>" + mdRender(entry.text) + "</div>";
+        if (entry.reasoning) {
+          html += "<details class='reasoning'><summary>Reasoning</summary><div class='pre'>" + richText(entry.reasoning) + "</div></details>";
+        }
       }
       return html + "</div>";
     }
@@ -688,6 +706,20 @@ function getWebviewHtml(webview, extensionUri) {
   // Live streaming region
   // ------------------------------------------------------------------
 
+  function appendStreamBlock(type, text) {
+    var last = streamBlocks[streamBlocks.length - 1];
+    if (last && last.type === type) last.text += text;
+    else streamBlocks.push({ type: type, text: text });
+  }
+
+  function blockText(type) {
+    var t = "";
+    for (var i = 0; i < streamBlocks.length; i++) {
+      if (streamBlocks[i].type === type) t += streamBlocks[i].text;
+    }
+    return t;
+  }
+
   function ensureStreamEl() {
     var t = document.getElementById("transcript");
     if (!t) return;
@@ -704,24 +736,44 @@ function getWebviewHtml(webview, extensionUri) {
   function rebuildStreamDom() {
     if (!streamEl) return;
     var html = "";
-    if (reasoningBuf) {
-      // Collapses automatically once real content starts arriving (see appendStream).
-      html += "<details class='reasoning stream-reasoning'" + (streamBuf ? "" : " open") + ">" +
-        "<summary>Thinking</summary><div class='pre'>" + richText(reasoningBuf) + "</div></details>";
+    for (var i = 0; i < streamBlocks.length; i++) {
+      var b = streamBlocks[i];
+      if (b.type === "reasoning") {
+        // Open only while it is the newest block and nothing real has arrived
+        // yet; older blocks and post-text thinking render collapsed.
+        var open = i === streamBlocks.length - 1 && !reasoningCollapsedOnce;
+        html += "<details class='reasoning stream-reasoning'" + (open ? " open" : "") + ">" +
+          "<summary>Thinking</summary><div class='pre'>" + richText(b.text) + "</div></details>";
+      } else {
+        html += "<div class='md streaming'>" + mdRender(b.text) + "</div>";
+      }
     }
-    html += "<div class='md streaming'>" + mdRender(streamBuf) + "</div>";
     streamEl.innerHTML = html;
   }
 
   function paintStream() {
     if (!streamEl) return;
-    var md = streamEl.querySelector(".md");
-    if (md) md.innerHTML = mdRender(streamBuf);
-    var d = streamEl.querySelector(".stream-reasoning");
+    // In-place update of the newest text / reasoning nodes; a brand-new block
+    // type needs a structural rebuild first (its node doesn't exist yet).
+    var want = { text: 0, reasoning: 0 };
+    for (var i = 0; i < streamBlocks.length; i++) want[streamBlocks[i].type]++;
+    if (streamEl.querySelectorAll(".md").length !== want.text ||
+        streamEl.querySelectorAll(".stream-reasoning").length !== want.reasoning) {
+      rebuildStreamDom();
+    }
+    var mds = streamEl.querySelectorAll(".md");
+    if (mds.length) mds[mds.length - 1].innerHTML = mdRender(blockText("text"));
+    var pres = streamEl.querySelectorAll(".stream-reasoning .pre");
+    if (pres.length) {
+      var pre = pres[pres.length - 1];
+      pre.innerHTML = richText(blockText("reasoning"));
+      pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
+    }
     // Collapse once when real content starts — never re-collapse afterwards,
     // so a user who expanded the reasoning to read it keeps it open.
-    if (d && streamBuf && !reasoningCollapsedOnce) {
-      d.open = false;
+    if (blockText("text") && !reasoningCollapsedOnce) {
+      var ds = streamEl.querySelectorAll(".stream-reasoning");
+      for (var j = 0; j < ds.length; j++) ds[j].open = false;
       reasoningCollapsedOnce = true;
     }
     scrollBottom(false);
@@ -731,29 +783,18 @@ function getWebviewHtml(webview, extensionUri) {
     // Always buffer, even while settings are open — the buffer survives
     // view switches and is repainted when the chat becomes visible again.
     streamActive = true;
-    streamBuf += delta;
+    appendStreamBlock("text", delta);
     if (!chatVisible()) return;
     ensureStreamEl();
-    queuePaint(function () {
-      var md = streamEl ? streamEl.querySelector(".md") : null;
-      if (md) md.innerHTML = mdRender(streamBuf);
-      scrollBottom(false);
-    });
+    queuePaint(paintStream);
   }
 
   function appendReasoning(delta) {
     streamActive = true;
-    reasoningBuf += delta;
+    appendStreamBlock("reasoning", delta);
     if (!chatVisible()) return;
     ensureStreamEl();
-    queuePaint(function () {
-      var pre = streamEl ? streamEl.querySelector(".stream-reasoning .pre") : null;
-      if (pre) {
-        pre.innerHTML = richText(reasoningBuf);
-        pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
-      }
-      scrollBottom(false);
-    });
+    queuePaint(paintStream);
   }
 
   function finalizeStream() {
@@ -761,8 +802,7 @@ function getWebviewHtml(webview, extensionUri) {
       streamEl.remove();
       streamEl = null;
     }
-    streamBuf = "";
-    reasoningBuf = "";
+    streamBlocks = [];
     streamActive = false;
     reasoningCollapsedOnce = false;
   }
@@ -773,13 +813,14 @@ function getWebviewHtml(webview, extensionUri) {
    * discarding that text is what made responses look "trimmed" in the chat.
    */
   function commitLivePartialIfAny(interrupted) {
-    if (!streamActive || (!streamBuf && !reasoningBuf)) return;
-    var text = streamBuf;
+    if (!streamActive || !streamBlocks.length) return;
+    var text = blockText("text");
     if (interrupted && text) text += "\\n\\n*(interrupted)*";
     state.transcript.push({
       kind: "assistant",
       text: text || "*(no text output before interruption)*",
-      reasoning: reasoningBuf || undefined,
+      reasoning: blockText("reasoning") || undefined,
+      blocks: streamBlocks.slice(),
     });
     if (chatVisible()) syncTranscript();
   }
@@ -888,7 +929,7 @@ function getWebviewHtml(webview, extensionUri) {
         break;
       case "assistant_delta":
         appendStream(msg.text);
-        if (streamBuf) { actionText = "Responding"; updateWorkingRow(); }
+        if (blockText("text")) { actionText = "Responding"; updateWorkingRow(); }
         break;
       case "reasoning_delta":
         appendReasoning(msg.text);
@@ -896,18 +937,22 @@ function getWebviewHtml(webview, extensionUri) {
       case "stream_reset":
         // Retry loop discarded a failed attempt — drop its live buffers.
         if (streamEl) { streamEl.remove(); streamEl = null; }
-        streamBuf = "";
-        reasoningBuf = "";
+        streamBlocks = [];
         break;
       case "assistant_message": {
         // Ignore empty, invisible turns (reasoning-only tool dispatch).
-        if (!String(msg.text || "").trim() && !msg.reasoning) break;
+        if (!String(msg.text || "").trim() && !msg.reasoning && !(msg.blocks && msg.blocks.length)) break;
         // Commit locally so the finished message shows immediately, even before
         // the next full-state push arrives.
         finalizeStream();
         stepsDone++;
         actionText = "";
-        state.transcript.push({ kind: "assistant", text: msg.text, reasoning: msg.reasoning });
+        state.transcript.push({
+          kind: "assistant",
+          text: msg.text,
+          reasoning: msg.reasoning,
+          blocks: Array.isArray(msg.blocks) && msg.blocks.length ? msg.blocks : undefined,
+        });
         if (chatVisible()) {
           syncTranscript();
           syncWorkingRow();

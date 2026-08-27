@@ -388,7 +388,7 @@ class AgentPanelProvider {
         const t = this.run ? this.run.transcript : this.transcript;
         switch (e.type) {
             case "assistant_message":
-                t.push({ kind: "assistant", text: e.text, reasoning: e.reasoning });
+                t.push({ kind: "assistant", text: e.text, reasoning: e.reasoning, blocks: e.blocks });
                 this.runTexts.push(e.text);
                 this.runPartial = "";
                 break;

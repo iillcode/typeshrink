@@ -10,6 +10,13 @@ export interface ChatMessage {
 	tool_calls?: ToolCallRequest[];
 	tool_call_id?: string;
 	name?: string;
+	/**
+	 * Reasoning/thinking produced by the model on the previous turn. Mirrors
+	 * Cline's "reasoning content block": it is echoed back into history so
+	 * reasoning models keep their chain-of-thought across turns. Only set when
+	 * the responding model actually emitted reasoning.
+	 */
+	reasoning_content?: string | null;
 }
 
 /** A tool call as produced by the model. */
@@ -82,11 +89,24 @@ export interface ModelProfile {
 	extraHeaders?: Record<string, string>;
 }
 
+/**
+ * One ordered content block of an assistant turn — mirrors Cline's
+ * `AgentMessagePart` sequence in agent-runtime: reasoning and text deltas are
+ * appended to the *last* block of the same type, so the order the model actually
+ * streamed (e.g. reasoning → text → reasoning) is preserved end-to-end instead
+ * of being flattened into a single reasoning blob above a single text blob.
+ */
+export type AssistantBlock =
+	| { type: "reasoning"; text: string }
+	| { type: "text"; text: string };
+
 export interface LlmResponse {
 	content: string;
 	reasoning?: string;
 	toolCalls: ToolCallRequest[];
 	finishReason: string | null;
+	/** Ordered reasoning/text blocks as streamed; optional for mock clients. */
+	blocks?: AssistantBlock[];
 }
 
 export interface StreamHandlers {
@@ -115,7 +135,7 @@ export type HarnessEvent =
 	| { type: "status"; phase: "thinking" | "executing" | "done" | "aborted" | "error"; detail?: string }
 	| { type: "assistant_delta"; text: string }
 	| { type: "reasoning_delta"; text: string }
-	| { type: "assistant_message"; text: string; reasoning?: string }
+	| { type: "assistant_message"; text: string; reasoning?: string; blocks?: AssistantBlock[] }
 	| { type: "tool_start"; callId: string; name: string; argsSummary: string }
 	| { type: "tool_output"; callId: string; text: string }
 	| { type: "tool_result"; callId: string; ok: boolean; output: string }
